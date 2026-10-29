@@ -1,27 +1,9 @@
 {
-  "exp_name": "v001_lgbm_walkforward",
-  "best": "lgbm",
-  "cv_auc": 0.5187080149608194,
+  "exp_name": "v002_fwd_logret_1d",
+  "task": "return",
+  "best": "random",
+  "cv_spearman": -0.002495888641721268,
   "params": {
-    "boosting_type": "'gbdt'",
-    "class_weight": "None",
-    "colsample_bytree": "0.8",
-    "importance_type": "'split'",
-    "learning_rate": "0.02",
-    "max_depth": "-1",
-    "min_child_samples": "200",
-    "min_child_weight": "0.001",
-    "min_split_gain": "0.0",
-    "n_estimators": "400",
-    "n_jobs": "None",
-    "num_leaves": "15",
-    "objective": "None",
-    "random_state": "0",
-    "reg_alpha": "0.0",
-    "reg_lambda": "1.0",
-    "subsample": "0.8",
-    "subsample_for_bin": "200000",
-    "subsample_freq": "1",
-    "verbose": "-1"
+    "random_state": "0"
   }
 }

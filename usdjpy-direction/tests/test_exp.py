@@ -26,7 +26,7 @@ def test_run_smoke(bar_cache, tmp_path):
 
 
 def test_cli_train_and_predict(bar_cache, tmp_path, capsys):
-    rc = train.main(["--models", "majority,lgbm", "--cv", "2", "--output-dir", str(tmp_path),
+    rc = train.main(["--exp", "v001_lgbm_walkforward", "--models", "majority,lgbm", "--cv", "2", "--output-dir", str(tmp_path),
                      "--no-experiments", "--no-figures", "--no-diagnostics"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -38,7 +38,7 @@ def test_cli_train_and_predict(bar_cache, tmp_path, capsys):
 
 
 def test_cli_evaluate_only(bar_cache, tmp_path, capsys):
-    rc = train.main(["--models", "majority", "--cv", "2", "--output-dir", str(tmp_path), "--evaluate-only",
+    rc = train.main(["--exp", "v001_lgbm_walkforward", "--models", "majority", "--cv", "2", "--output-dir", str(tmp_path), "--evaluate-only",
                      "--no-experiments", "--no-figures"])
     assert rc == 0 and not (tmp_path / "predictions.csv").exists()
     assert "best model: majority" in capsys.readouterr().out
@@ -46,6 +46,6 @@ def test_cli_evaluate_only(bar_cache, tmp_path, capsys):
 
 def test_experiment_ladder(bar_cache, tmp_path):
     out = tmp_path / "experiments.json"
-    assert experiments.main(["--cv", "2", "--only", "majority,reversal,returns only", "--out", str(out)]) == 0
+    assert experiments.main(["--task", "direction", "--cv", "2", "--only", "majority,reversal,returns only", "--out", str(out)]) == 0
     res = json.loads(out.read_text())["results"]
     assert len(res) == 3

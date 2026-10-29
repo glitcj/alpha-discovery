@@ -82,10 +82,16 @@ class BarCleaner(_FrameTransformer):
     max_abs_logret : float
         A close-to-close log move above this (default 5%) in one hour is treated as a bad
         print and the bar is dropped. USDJPY has never moved that much in an hour.
+    regular_grid : bool
+        Reindex to every hour of the FX week (``fx_week_mask``: Sunday 17:00 → Friday 17:00
+        New York time) and forward-fill missing hours (OHLC = last close), the way ml-pipe
+        resamples onto ``week_range``. Positional shifts then mean fixed clock offsets within a
+        week, and weekend hours are absent rather than gaps.
     """
 
-    def __init__(self, max_abs_logret: float = 0.05):
+    def __init__(self, max_abs_logret: float = 0.05, regular_grid: bool = False):
         self.max_abs_logret = max_abs_logret
+        self.regular_grid = regular_grid
 
     def _output_columns(self, X):
         return list(OHLC)
@@ -104,7 +110,33 @@ class BarCleaner(_FrameTransformer):
         for c in ("open", "high", "low"):
             df[c] = df[c].fillna(df["close"])
         jump = np.log(df["close"]).diff().abs()
-        return df[~(jump > self.max_abs_logret)]
+        df = df[~(jump > self.max_abs_logret)]
+        return to_fx_week_grid(df) if self.regular_grid else df
+
+
+FX_TZ = "America/New_York"
+
+
+def fx_week_mask(index: pd.DatetimeIndex) -> np.ndarray:
+    """True for hours inside the FX week: Sunday 17:00 → Friday 16:59 New York time (DST-aware)."""
+    ny = pd.DatetimeIndex(index).tz_convert(FX_TZ)
+    dow, hour = ny.day_of_week, ny.hour            # Monday = 0 ... Sunday = 6
+    return np.asarray(((dow >= 0) & (dow <= 3)) | ((dow == 4) & (hour < 17)) | ((dow == 6) & (hour >= 17)))
+
+
+def to_fx_week_grid(bars: pd.DataFrame) -> pd.DataFrame:
+    """Reindex to every hour of the FX week between the first and last bar; forward-fill gaps."""
+    if bars.empty:
+        return bars
+    full = pd.date_range(bars.index[0], bars.index[-1], freq=BAR, tz="UTC", name=bars.index.name)
+    grid = full[fx_week_mask(full)]
+    out = bars[fx_week_mask(bars.index)].reindex(grid)
+    close = out["close"].ffill()
+    missing = out["close"].isna()
+    for c in ("open", "high", "low"):
+        out[c] = out[c].where(~missing, close)
+    out["close"] = close
+    return out.dropna(subset=["close"])
 
 
 # ---------------------------------------------------------------------------
@@ -166,18 +198,166 @@ class BarFeatureEngineer(_FrameTransformer):
         f["upper_wick"] = (h - np.maximum(o, c)) / hl
         f["lower_wick"] = (np.minimum(o, c) - l) / hl
 
-        idx = pd.DatetimeIndex(X.index)
-        hour = idx.hour.to_numpy(dtype=float)
-        f["hour"] = hour
-        f["hour_sin"] = np.sin(2 * np.pi * hour / 24)
-        f["hour_cos"] = np.cos(2 * np.pi * hour / 24)
-        f["weekday"] = idx.day_of_week.to_numpy(dtype=float)
-        f = f.join(session_flags(idx))
-        gap = (idx.to_series().diff() != BAR).to_numpy()   # first bar counts as a gap
-        block = np.cumsum(gap)
-        since = pd.Series(np.arange(len(idx)), index=X.index).groupby(block).cumcount()
-        f["hours_since_gap"] = np.minimum(since.to_numpy(), GAP_CAP).astype(float)
+        f = f.join(calendar_features(pd.DatetimeIndex(X.index)))
         return f[ALL_FEATURES]
+
+
+def calendar_features(idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """``CALENDAR_FEATURES`` for a UTC index (hour, weekday, sessions, bars since the last gap)."""
+    f = pd.DataFrame(index=idx)
+    hour = idx.hour.to_numpy(dtype=float)
+    f["hour"] = hour
+    f["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    f["hour_cos"] = np.cos(2 * np.pi * hour / 24)
+    f["weekday"] = idx.day_of_week.to_numpy(dtype=float)
+    f = f.join(session_flags(idx))
+    gap = (idx.to_series().diff() != BAR).to_numpy()   # first bar counts as a gap
+    block = np.cumsum(gap)
+    since = pd.Series(np.arange(len(idx)), index=idx).groupby(block).cumcount()
+    f["hours_since_gap"] = np.minimum(since.to_numpy(), GAP_CAP).astype(float)
+    return f[CALENDAR_FEATURES]
+
+
+# ---------------------------------------------------------------------------
+# stage 2b: ml-pipe multi-window features (``alpaca_ml`` ``time_series_features``)
+# ---------------------------------------------------------------------------
+# ml-pipe windows on 30-min bars [3, 12, 24, 48, 240, 1008, 3024] = 1.5h, 6h, 12h, 1d, 5d, 21d, 63d;
+# the same clock spans on 1h bars (1.5h rounded to 2). Shift 23 ~ ml-pipe's 47 (1 day ago).
+ML_PIPE_WINDOWS = (2, 6, 12, 24, 120, 504, 1512)
+ML_PIPE_SHIFTS = (0, 23)
+
+
+def _weighted_window(x: np.ndarray, window: int, centred: bool) -> np.ndarray:
+    """ml-pipe's WEMA / WEVolatility kernel: weights ``(1-a)^k`` (newest = 1), ``a = 2/(1+window)``.
+
+    ``centred=False`` -> weighted mean of x; ``True`` -> weighted variance around the *plain*
+    window mean (ddof=1 scaling), exactly as ``WEVolatility._make_window_fn``.
+    """
+    alpha = 2 / (1 + window)
+    w = (1 - alpha) ** np.arange(window)[::-1]           # oldest ... newest
+    out = np.full(len(x), np.nan)
+    if len(x) < window:
+        return out
+    k = w[::-1]                                          # np.convolve flips the kernel
+    s1 = np.convolve(x, k, mode="valid")
+    if not centred:
+        out[window - 1:] = s1 / w.sum()
+        return out
+    s2 = np.convolve(x * x, k, mode="valid")
+    m = np.convolve(x, np.ones(window), mode="valid") / window
+    var = (s2 - 2 * m * s1 + m * m * w.sum()) / w.sum() * window / (window - 1)
+    out[window - 1:] = np.sqrt(np.clip(var, 0, None))
+    return out
+
+
+def _fill_moments(s: pd.Series, window: int) -> pd.Series:
+    """ml-pipe fills NaN skew/kurt after warm-up (flat windows) with 0."""
+    s = s.copy()
+    s.iloc[window - 1:] = s.iloc[window - 1:].fillna(0.0)
+    return s
+
+
+def _ml_pipe_feature(kind: str, c: pd.Series, w: int) -> pd.Series | None:
+    """One ``tsf`` feature type on a close series; ``None`` when the window is too short for it."""
+    ret = c.pct_change(fill_method=None)
+    ma = lambda s, n: s.rolling(n).mean()  # noqa: E731
+    if kind == "diff":
+        return c.diff(w)
+    if kind == "pct_change":
+        return c.pct_change(w, fill_method=None)
+    if kind == "ma_div":
+        return (c - ma(c, w)) / ma(c, w)
+    if kind == "wema_div":
+        wema = pd.Series(_weighted_window(c.to_numpy(float), w, centred=False), index=c.index)
+        return (c - wema) / wema
+    if kind == "volatility":
+        return c.rolling(w).std()
+    if kind == "change_volatility":
+        return ret.rolling(w).std()
+    if kind in ("we_volatility", "change_we_volatility"):
+        if w < 3:
+            return None
+        src = c if kind == "we_volatility" else ret
+        return pd.Series(_weighted_window(src.to_numpy(float), w, centred=True), index=c.index)
+    if kind in ("skew", "change_skew"):
+        if w < 3:
+            return None
+        return _fill_moments((c if kind == "skew" else ret).rolling(w).skew(), w)
+    if kind in ("kurt", "change_kurt"):
+        if w < 4:                                      # unbiased excess kurtosis needs n >= 4
+            return None
+        return _fill_moments((c if kind == "kurt" else ret).rolling(w).kurt(), w)
+    if kind in ("macd", "macd_diff"):
+        if w < 3:
+            return None
+        long_ma, short_ma = ma(c, w), ma(c, int(w * 0.5))
+        return (short_ma - long_ma) / long_ma if kind == "macd" else short_ma - long_ma
+    if kind == "rsi":
+        d = c.diff()
+        gain, loss = d.clip(lower=0), (-d).clip(lower=0)
+        rs = ma(gain, w) / ma(loss, w).clip(lower=1e-7)
+        return 1.0 - 2.0 / (1.0 + rs)
+    if kind == "drawdown":
+        hi = c.rolling(w).max()
+        return (hi - c) / hi
+    if kind == "drawup":
+        lo = c.rolling(w).min()
+        return (c - lo) / lo
+    if kind == "zscore":
+        if w < 3:
+            return None
+        de_ma, sd = c - ma(c, w), c.rolling(w).std(ddof=0)
+        z = de_ma / sd
+        z[sd == 0] = np.sign(de_ma[sd == 0]) * 3
+        return z.clip(-3, 3)
+    raise ValueError(f"unknown ml-pipe feature type {kind!r}")
+
+
+ML_PIPE_TYPES = ("diff", "pct_change", "ma_div", "wema_div", "volatility", "change_volatility",
+                 "we_volatility", "change_we_volatility", "skew", "kurt", "change_skew", "change_kurt",
+                 "macd", "macd_diff", "rsi", "drawdown", "drawup", "zscore")
+
+
+class MultiWindowFeatureEngineer(_FrameTransformer):
+    """ml-pipe's ``basic_feature_defs`` x ``windows`` x ``shifts`` on the close, plus calendar columns.
+
+    Columns are ``{type}_w{window}_s{shift}`` (shift 0 = now, 23 = the same feature one day ago),
+    followed by ``CALENDAR_FEATURES`` when ``calendar=True`` (candidates can exclude them).
+    Every feature at bar t uses bars <= t only. Feature types follow
+    ``alpaca_ml.contrib.sklearn.feature_extraction.time_series_features``; ``Volatility``,
+    ``WEVolatility``, ``Skew`` and ``Kurt`` act on price *levels* as they do there, the ``Change*``
+    variants on 1-bar percentage changes.
+    """
+
+    def __init__(self, types=ML_PIPE_TYPES, windows=ML_PIPE_WINDOWS, shifts=ML_PIPE_SHIFTS, calendar: bool = True):
+        self.types = types
+        self.windows = windows
+        self.shifts = shifts
+        self.calendar = calendar
+
+    def _base(self, c: pd.Series) -> dict[str, pd.Series]:
+        out = {}
+        for kind in self.types:
+            for w in self.windows:
+                s = _ml_pipe_feature(kind, c, int(w))
+                if s is not None:
+                    out[f"{kind}_w{w}"] = s.replace([np.inf, -np.inf], np.nan)
+        return out
+
+    def _output_columns(self, X):
+        names = [k for k in self._base(pd.Series(np.linspace(1, 2, 8), dtype=float))]
+        cols = [f"{n}_s{s}" for s in self.shifts for n in names]
+        return cols + (list(CALENDAR_FEATURES) if self.calendar else [])
+
+    def transform(self, X):
+        check_is_fitted(self, "feature_names_in_")
+        X = self._check_frame(X)
+        base = self._base(X["close"].astype(float))
+        parts = {f"{n}_s{s}": v.shift(s) for s in self.shifts for n, v in base.items()}
+        f = pd.DataFrame(parts, index=X.index)
+        if self.calendar:
+            f = f.join(calendar_features(pd.DatetimeIndex(X.index)))
+        return f[self._output_columns(X)]
 
 
 # ---------------------------------------------------------------------------
@@ -191,13 +371,42 @@ def feature_columns(drop=()) -> list[str]:
     return [c for c in ALL_FEATURES if c not in drop]
 
 
-def make_preprocessor(kind: str = "tree", drop=()) -> ColumnTransformer:
-    """Select ``ALL_FEATURES`` minus ``drop`` and encode them for a model family.
+class ColumnSubset:
+    """Picklable column selector for ``ColumnTransformer``: every column minus ``exclude``,
+    filtered by ``include_regex`` / ``exclude_regex`` (``re.search``)."""
+
+    def __init__(self, exclude=(), include_regex: str | None = None, exclude_regex: str | None = None):
+        self.exclude = tuple(exclude)
+        self.include_regex = include_regex
+        self.exclude_regex = exclude_regex
+
+    def __call__(self, X: pd.DataFrame) -> list[str]:
+        import re
+
+        cols = [c for c in X.columns if c not in self.exclude]
+        if self.include_regex:
+            cols = [c for c in cols if re.search(self.include_regex, c)]
+        if self.exclude_regex:
+            cols = [c for c in cols if not re.search(self.exclude_regex, c)]
+        if not cols:
+            raise ValueError(f"{self!r} selected no columns")
+        return cols
+
+    def __repr__(self):
+        return (f"ColumnSubset(exclude={len(self.exclude)} cols, include_regex={self.include_regex!r}, "
+                f"exclude_regex={self.exclude_regex!r})")
+
+
+def make_preprocessor(kind: str = "tree", drop=(), columns=None) -> ColumnTransformer:
+    """Select feature columns and encode them for a model family.
+
+    ``columns=None`` selects ``ALL_FEATURES`` minus ``drop`` (the v001 bar features); a
+    :class:`ColumnSubset` (or any list / callable) selects from whatever frame arrives.
 
     ``"tree"``   passthrough; NaN kept (LightGBM handles missing values natively).
-    ``"dense"``  median-impute + standardise (logistic regression).
+    ``"dense"``  median-impute + standardise (linear models).
     """
-    cols = feature_columns(drop)
+    cols = feature_columns(drop) if columns is None else columns
     if kind == "tree":
         step = "passthrough"
     elif kind == "dense":
