@@ -1,0 +1,25 @@
+{
+  "workbench.colorTheme": "Quiet Light",
+  "zenMode.centerLayout": false,
+  "workbench.colorCustomizations": {
+    "[Quiet Light]": {
+      "titleBar.activeBackground": "#dfe8dc",
+      "titleBar.activeForeground": "#3f4a3c",
+      "titleBar.inactiveBackground": "#e9eee7",
+      "titleBar.inactiveForeground": "#7a8577",
+      "statusBar.background": "#c9d8c5",
+      "statusBar.foreground": "#3f4a3c",
+      "statusBar.noFolderBackground": "#c9d8c5",
+      "statusBar.debuggingBackground": "#e6d3b3",
+      "statusBar.debuggingForeground": "#4a3f2c",
+      "activityBar.background": "#e4ebe1",
+      "activityBar.foreground": "#4f5d4b",
+      "activityBar.inactiveForeground": "#8a9686",
+      "activityBarBadge.background": "#7f9c78",
+      "activityBarBadge.foreground": "#ffffff",
+      "editor.lineHighlightBackground": "#eef2ec",
+      "editor.selectionBackground": "#d6e2d2",
+      "editorCursor.foreground": "#6b8a64"
+    }
+  }
+}
