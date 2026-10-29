@@ -8,7 +8,7 @@ constructor), builders own *how* auxiliary objects are constructed (``build(...)
 from .builders import BaselineBuilder, MetricsBuilder
 from .display import (display_dataframe, display_figure, display_info_box, display_markdown,
                       display_title, in_notebook)
-from .reporters import (AutocorrelationReporter, CoverageReporter, DataReporter, ExperimentsReporter,
+from .reporters import (AutocorrelationReporter, CoverageReporter, DataReporter, ExperimentsReporter, ResidualReporter,
                         FeatureSummaryReporter, HoldoutReporter, ImportanceReporter, LeaderboardReporter,
                         PostAnalysisReporter, PreAnalysisReporter, Reporter, SliceReporter, TargetReporter,
                         TrainingReporter)
@@ -19,6 +19,6 @@ __all__ = [
     "in_notebook",
     "AutocorrelationReporter", "CoverageReporter", "DataReporter", "ExperimentsReporter",
     "FeatureSummaryReporter", "HoldoutReporter", "ImportanceReporter", "LeaderboardReporter",
-    "PostAnalysisReporter", "PreAnalysisReporter", "Reporter", "SliceReporter", "TargetReporter",
+    "PostAnalysisReporter", "PreAnalysisReporter", "Reporter", "ResidualReporter", "SliceReporter", "TargetReporter",
     "TrainingReporter",
 ]

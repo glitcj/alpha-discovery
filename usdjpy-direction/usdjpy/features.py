@@ -318,6 +318,27 @@ ML_PIPE_TYPES = ("diff", "pct_change", "ma_div", "wema_div", "volatility", "chan
                  "macd", "macd_diff", "rsi", "drawdown", "drawup", "zscore")
 
 
+ASSET_SEP = "__"          # "<asset>__<type>_w<window>_s<shift>" for basket assets; USDJPY columns are unprefixed
+
+
+def asset_of(column: str) -> str:
+    """``"EURUSD__ma_div_w24_s0"`` -> ``"EURUSD"``; unprefixed (USDJPY / calendar) columns -> ``"USDJPY"``."""
+    return column.split(ASSET_SEP, 1)[0] if ASSET_SEP in column else "USDJPY"
+
+
+def feature_type_of(column: str) -> str:
+    """``"EURUSD__ma_div_w24_s0"`` -> ``"ma_div"``; calendar columns -> ``"calendar"``; ``stale_*`` -> ``"stale"``."""
+    base = column.split(ASSET_SEP, 1)[-1]
+    if base in CALENDAR_FEATURES:
+        return "calendar"
+    if base.startswith("stale"):
+        return "stale"
+    import re
+
+    m = re.match(r"^(.*)_w\d+_s\d+$", base)
+    return m.group(1) if m else base
+
+
 class MultiWindowFeatureEngineer(_FrameTransformer):
     """ml-pipe's ``basic_feature_defs`` x ``windows`` x ``shifts`` on the close, plus calendar columns.
 
@@ -327,13 +348,21 @@ class MultiWindowFeatureEngineer(_FrameTransformer):
     ``alpaca_ml.contrib.sklearn.feature_extraction.time_series_features``; ``Volatility``,
     ``WEVolatility``, ``Skew`` and ``Kurt`` act on price *levels* as they do there, the ``Change*``
     variants on 1-bar percentage changes.
+
+    ``assets`` (v003+): names of basket assets whose closes arrive as ``close_<name>`` columns (joined
+    onto the bars by the pipeline, see ``usdjpy.data.align_basket``). Each gets the same feature set
+    under the prefix ``<name>__``, plus its ``stale_<name>`` column (hours since the asset's last print)
+    when present. Assets without a ``close_<name>`` column are skipped silently (e.g. dropped as too
+    sparse by ``align_basket``).
     """
 
-    def __init__(self, types=ML_PIPE_TYPES, windows=ML_PIPE_WINDOWS, shifts=ML_PIPE_SHIFTS, calendar: bool = True):
+    def __init__(self, types=ML_PIPE_TYPES, windows=ML_PIPE_WINDOWS, shifts=ML_PIPE_SHIFTS, calendar: bool = True,
+                 assets=()):
         self.types = types
         self.windows = windows
         self.shifts = shifts
         self.calendar = calendar
+        self.assets = assets
 
     def _base(self, c: pd.Series) -> dict[str, pd.Series]:
         out = {}
@@ -344,9 +373,16 @@ class MultiWindowFeatureEngineer(_FrameTransformer):
                     out[f"{kind}_w{w}"] = s.replace([np.inf, -np.inf], np.nan)
         return out
 
+    def _present_assets(self, X) -> list[str]:
+        return [a for a in self.assets if f"close_{a}" in X.columns]
+
     def _output_columns(self, X):
         names = [k for k in self._base(pd.Series(np.linspace(1, 2, 8), dtype=float))]
         cols = [f"{n}_s{s}" for s in self.shifts for n in names]
+        for a in self._present_assets(X):
+            cols += [f"{a}{ASSET_SEP}{n}_s{s}" for s in self.shifts for n in names]
+            if f"stale_{a}" in X.columns:
+                cols.append(f"{a}{ASSET_SEP}stale")
         return cols + (list(CALENDAR_FEATURES) if self.calendar else [])
 
     def transform(self, X):
@@ -354,6 +390,11 @@ class MultiWindowFeatureEngineer(_FrameTransformer):
         X = self._check_frame(X)
         base = self._base(X["close"].astype(float))
         parts = {f"{n}_s{s}": v.shift(s) for s in self.shifts for n, v in base.items()}
+        for a in self._present_assets(X):
+            ab = self._base(X[f"close_{a}"].astype(float))
+            parts.update({f"{a}{ASSET_SEP}{n}_s{s}": v.shift(s) for s in self.shifts for n, v in ab.items()})
+            if f"stale_{a}" in X.columns:
+                parts[f"{a}{ASSET_SEP}stale"] = X[f"stale_{a}"].astype(float)
         f = pd.DataFrame(parts, index=X.index)
         if self.calendar:
             f = f.join(calendar_features(pd.DatetimeIndex(X.index)))
@@ -375,15 +416,22 @@ class ColumnSubset:
     """Picklable column selector for ``ColumnTransformer``: every column minus ``exclude``,
     filtered by ``include_regex`` / ``exclude_regex`` (``re.search``)."""
 
-    def __init__(self, exclude=(), include_regex: str | None = None, exclude_regex: str | None = None):
+    def __init__(self, exclude=(), include_regex: str | None = None, exclude_regex: str | None = None,
+                 assets=None, exclude_assets=()):
         self.exclude = tuple(exclude)
         self.include_regex = include_regex
         self.exclude_regex = exclude_regex
+        self.assets = None if assets is None else tuple(assets)       # keep only these assets' columns
+        self.exclude_assets = tuple(exclude_assets)
 
     def __call__(self, X: pd.DataFrame) -> list[str]:
         import re
 
         cols = [c for c in X.columns if c not in self.exclude]
+        if self.assets is not None:
+            cols = [c for c in cols if asset_of(c) in self.assets]
+        if self.exclude_assets:
+            cols = [c for c in cols if asset_of(c) not in self.exclude_assets]
         if self.include_regex:
             cols = [c for c in cols if re.search(self.include_regex, c)]
         if self.exclude_regex:
@@ -394,7 +442,7 @@ class ColumnSubset:
 
     def __repr__(self):
         return (f"ColumnSubset(exclude={len(self.exclude)} cols, include_regex={self.include_regex!r}, "
-                f"exclude_regex={self.exclude_regex!r})")
+                f"exclude_regex={self.exclude_regex!r}, assets={self.assets}, exclude_assets={self.exclude_assets})")
 
 
 def make_preprocessor(kind: str = "tree", drop=(), columns=None) -> ColumnTransformer:

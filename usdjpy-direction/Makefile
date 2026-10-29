@@ -1,4 +1,4 @@
-# USDJPY 1-day forward log return (v002) / 1-hour direction (v001) — everything runs inside the Docker image.
+# USDJPY 1-day forward log return, cross-asset (v003) / USDJPY-only (v002) / 1-hour direction (v001) — everything runs inside the Docker image.
 IMAGE  ?= usdjpy-direction
 MOUNTS := -v $(CURDIR):/app
 RUN    := docker run --rm $(MOUNTS) $(IMAGE)
@@ -7,7 +7,7 @@ RUN_IT := docker run --rm -it $(MOUNTS) $(IMAGE)
 # what `make run` executes inside the container, e.g. make run FILE="-m usdjpy.train --n-rows 3000 --cv 3"
 FILE   ?= -m usdjpy.train --help
 # experiment module under usdjpy/exp/ and candidate subset for `make train` / `make evaluate` (empty = the arm's set)
-EXP    ?= v002_fwd_logret_1d
+EXP    ?= v003_cross_asset
 MODELS ?=
 CV     ?= 5
 SEED   ?= 0
@@ -31,8 +31,8 @@ help: ## list targets
 build: ## build the docker image (rerun after touching requirements.txt)
 	docker build -t $(IMAGE) .
 
-fetch: ## download 1h bars from Yahoo Finance into dataset/ (the only target that needs network)
-	$(RUN) python -m usdjpy.data --ticker "$(TICKER)" --period $(PERIOD)
+fetch: ## download 1h bars for USDJPY + the cross-asset basket into dataset/ (the only target that needs network)
+	$(RUN) python -m usdjpy.data --ticker "$(TICKER)" --period $(PERIOD) --basket
 
 run: ## run python inside the container: make run FILE="-m usdjpy.train --cv 3"
 	$(RUN) python $(FILE)

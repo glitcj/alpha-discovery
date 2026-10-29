@@ -2,8 +2,9 @@
 
     python -m usdjpy.experiments [--task return|direction] [--cv 5] [--seed 0] [--only lgbm] [--out ...]
 
-``--task return`` (default) evaluates variants of the v002 forward-log-return regressors on v002's
-data (FX-week grid, ml-pipe multi-window features, 1-day target, 16-day gap). ``--task direction``
+``--task return`` (default) evaluates variants of the forward-log-return regressors on v003's data
+(FX-week grid, ml-pipe multi-window features on USDJPY + the cross-asset basket, 1-day target,
+16-day gap); ``--no-basket`` restricts it to v002's USDJPY-only data. ``--task direction``
 runs the v001 next-hour direction ladder. Every variant sees the same development rows (holdout
 excluded) and the same walk-forward folds.
 """
@@ -16,18 +17,19 @@ from pathlib import Path
 
 from sklearn.pipeline import Pipeline
 
-from .data import load_bars
+from .data import BASKET_GROUPS, load_bars, load_basket
 from .evaluation import DEFAULT_COST_BPS, DirectionEvaluator, ReturnEvaluator, md_table
 from .exp import v001_lgbm_walkforward as v001
 from .exp import v002_fwd_logret_1d as v002
+from .exp import v003_cross_asset as v003
 from .features import CALENDAR_FEATURES, CANDLE_FEATURES, ROLLING_FEATURES, ColumnSubset
 from .models import make_candidate
 from .pipeline import prepare
 
 COLUMNS = {
     "direction": ["auc", "auc_fold_std", "log_loss", "accuracy", "strategy_bps", "sharpe", "fit_time_s"],
-    "return": ["spearman", "spearman_fold_std", "pearson", "r2", "mcc", "hit_rate", "strategy_bps", "sharpe",
-               "fit_time_s"],
+    "return": ["spearman", "spearman_fold_std", "kendall", "pearson", "r2", "mcc", "f1", "bin_acc", "strategy_bps",
+               "sharpe", "rank_score", "fit_time_s"],
 }
 
 
@@ -52,9 +54,23 @@ def direction_variants(seed: int) -> dict[str, Pipeline]:
     }
 
 
-def return_variants(seed: int) -> dict[str, Pipeline]:
+def return_variants(seed: int, cross_asset: bool = True) -> dict[str, Pipeline]:
     no_cal = dict(exclude=CALENDAR_FEATURES)
-    reg = lambda **kw: make_candidate("lgbm_reg", seed, **kw)  # noqa: E731
+    reg = lambda **kw: (v003._lgbm(seed, kw.get("columns")) if cross_asset else make_candidate("lgbm_reg", seed, **kw))  # noqa: E731
+    fx = tuple(BASKET_GROUPS["fx"])
+    groups = {}
+    if cross_asset:
+        groups = {
+            "lgbm_reg: USDJPY only (v002 columns)": make_candidate("lgbm_reg", seed,
+                                                                   columns=ColumnSubset(**no_cal, assets=("USDJPY",))),
+            "lgbm_reg: USDJPY + FX": reg(columns=ColumnSubset(**no_cal, assets=("USDJPY",) + fx)),
+            "lgbm_reg: USDJPY + rates": reg(columns=ColumnSubset(**no_cal, assets=("USDJPY",) + tuple(BASKET_GROUPS["rates"]))),
+            "lgbm_reg: USDJPY + equity/vol": reg(columns=ColumnSubset(**no_cal, assets=("USDJPY",) + tuple(BASKET_GROUPS["equity"]))),
+            "lgbm_reg: USDJPY + commodities": reg(columns=ColumnSubset(**no_cal, assets=("USDJPY",) + tuple(BASKET_GROUPS["commodity"]))),
+            "lgbm_reg: basket without USDJPY": reg(columns=ColumnSubset(**no_cal, exclude_assets=("USDJPY",))),
+            "lgbm_reg: colsample 0.1": reg().set_params(model__regressor__colsample_bytree=0.1),
+            "lgbm_reg: no stale columns": reg(columns=ColumnSubset(**no_cal, exclude_regex=r"__stale$")),
+        }
     return {
         "persistence (last day's return)": make_candidate("persistence", seed),
         "mean (21-day mean daily return)": make_candidate("mean", seed),
@@ -74,6 +90,7 @@ def return_variants(seed: int) -> dict[str, Pipeline]:
         "lgbm_reg: shift 0 only": reg(columns=ColumnSubset(**no_cal, exclude_regex=r"_s23$")),
         "lgbm_reg: pct_change only": reg(columns=ColumnSubset(**no_cal, include_regex=r"^pct_change_")),
         "lgbm_reg: + calendar": reg(columns=ColumnSubset()),
+        **groups,
     }
 
 
@@ -81,6 +98,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m usdjpy.experiments", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--task", choices=("return", "direction"), default="return")
+    ap.add_argument("--no-basket", action="store_true", help="return task on v002's USDJPY-only data")
     ap.add_argument("--cv", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gap", type=int, default=None, help="bars between train and test (default: the arm's)")
@@ -94,11 +112,13 @@ def main(argv=None) -> int:
     if args.n_rows:
         bars = bars.iloc[-args.n_rows:]
     if args.task == "return":
-        gap = v002.GAP if args.gap is None else args.gap
-        data = prepare(bars, v002.make_cleaner(), v002.make_feature_engineer(), v002.HOLDOUT_FRAC,
-                       target_builder=v002.make_target_builder(), purge=v002.HORIZON + v002.OFFSET)
-        ev = ReturnEvaluator(cv=args.cv, gap=gap, cost_bps=args.cost_bps, horizon=v002.HORIZON)
-        todo = return_variants(args.seed)
+        arm = v002 if args.no_basket else v003
+        gap = arm.GAP if args.gap is None else args.gap
+        basket = None if args.no_basket else load_basket(v003.ASSETS)
+        data = prepare(bars, arm.make_cleaner(), arm.make_feature_engineer(), arm.HOLDOUT_FRAC,
+                       target_builder=arm.make_target_builder(), purge=arm.HORIZON + arm.OFFSET, basket=basket)
+        ev = ReturnEvaluator(cv=args.cv, gap=gap, cost_bps=args.cost_bps, horizon=arm.HORIZON)
+        todo = return_variants(args.seed, cross_asset=not args.no_basket)
     else:
         gap = v001.GAP if args.gap is None else args.gap
         data = prepare(bars, v001.make_cleaner(), v001.make_feature_engineer(), v001.HOLDOUT_FRAC)
@@ -113,7 +133,8 @@ def main(argv=None) -> int:
     print(md_table(board.reindex(columns=cols)))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"task": args.task, "primary_metric": cols[0], "cv": args.cv, "gap": gap,
+    out.write_text(json.dumps({"task": args.task, "arm": ("v001" if args.task == "direction" else ("v002" if args.no_basket else "v003")),
+                               "primary_metric": cols[0], "cv": args.cv, "gap": gap, "n_features": int(data.X.shape[1]),
                                "seed": args.seed, "cost_bps": args.cost_bps, "n_dev": int(len(data.X)),
                                "dev_start": str(data.X.index[0]), "dev_end": str(data.X.index[-1]),
                                "results": board.reindex(columns=cols).reset_index().to_dict(orient="records")},

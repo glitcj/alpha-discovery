@@ -44,7 +44,7 @@ from sklearn.pipeline import Pipeline
 from .. import __version__
 from ..analysis.builders import BaselineBuilder, MetricsBuilder
 from ..analysis.reporters import PostAnalysisReporter, PreAnalysisReporter
-from ..data import OHLC, make_target, split_holdout, write_predictions
+from ..data import OHLC, align_basket, make_target, split_holdout, write_predictions
 from ..evaluation import DirectionEvaluator, EvaluationReport, leaderboard, save_report
 from ..features import BarCleaner, BarFeatureEngineer
 
@@ -99,17 +99,23 @@ def _log(exp_name: str, msg: str) -> None:
 
 
 def prepare(bars: pd.DataFrame, cleaner: BarCleaner, feature_engineer, holdout_frac: float,
-            target_builder=make_target, purge: int = 0) -> Dataset:
+            target_builder=make_target, purge: int = 0, basket: dict | None = None) -> Dataset:
     """Clean, engineer (full series), label, drop warm-up rows, split chronologically.
 
     ``target_builder(cleaned_bars)`` returns a frame with ``y`` and ``next_logret``; ``purge`` rows
     are dropped between the development rows and the holdout (labels that look into the holdout).
+    ``basket`` (name -> OHLC) is aligned onto the cleaned USDJPY grid (``align_basket``) and joined as
+    ``close_<name>`` / ``stale_<name>`` columns before the feature engineer runs.
     """
     cleaned = clone(cleaner).fit_transform(bars)
+    if basket:
+        cleaned = cleaned.join(align_basket(basket, cleaned.index))
     feats = clone(feature_engineer).fit_transform(cleaned)
     target = target_builder(cleaned)
-    # warm-up: drop rows before the longest rolling window is filled
-    warm = feats.notna().all(axis=1)
+    # warm-up: drop rows before the USDJPY rolling windows are filled (basket columns may start later
+    # than USDJPY on Yahoo and stay NaN for a while; LightGBM handles that natively)
+    own = [c for c in feats.columns if "__" not in c]
+    warm = feats[own].notna().all(axis=1)
     first_full = warm.idxmax() if warm.any() else feats.index[-1]
     target = target[target.index >= first_full]
     if len(target) < 50:
@@ -175,6 +181,8 @@ def execute(
     target_builder=make_target,
     purge: int = 0,
     target_meta: dict | None = None,
+    # Cross-asset inputs: name -> OHLC frames joined onto the USDJPY grid (v003+)
+    basket: dict | None = None,
     # Experiments: name -> Experiment
     extra_experiments: dict[str, Experiment] | None = None,
     # Flags
@@ -203,7 +211,8 @@ def execute(
         raise ValueError("no candidates and no baselines: nothing to evaluate")
 
     # Step2: Preparation
-    data = prepare(bars, cleaner, feature_engineer, holdout_frac, target_builder=target_builder, purge=purge)
+    data = prepare(bars, cleaner, feature_engineer, holdout_frac, target_builder=target_builder, purge=purge,
+                   basket=basket)
     task, pm = evaluator.task, evaluator.primary_metric
     if not data.X.index.max() < data.X_hold.index.min():
         raise ValueError("holdout must be strictly after the development rows")
@@ -213,6 +222,8 @@ def execute(
         "exp_name": exp_name, "ticker": ticker, "seed": seed, "task": task, "primary_metric": pm,
         "target": target_meta or {"kind": "next-bar direction"}, "purge": purge,
         "cv": repr(evaluator._cv()), "cost_bps": evaluator.cost_bps, "n_features": int(data.X.shape[1]),
+        "basket": sorted(basket) if basket else [],
+        "basket_used": sorted({c.split("__")[0] for c in data.X.columns if "__" in c}),
         "n_bars": int(len(data.bars)), "bars_start": str(data.bars.index[0]), "bars_end": str(data.bars.index[-1]),
         "n_dev": int(len(data.X)), "dev_start": str(data.X.index[0]), "dev_end": str(data.X.index[-1]),
         "n_holdout": int(len(data.X_hold)), "holdout_start": str(data.X_hold.index[0]),
@@ -250,17 +261,22 @@ def execute(
         gap = getattr(evaluator, "gap", 0) or 0
         X_tr, y_tr = data.X.iloc[:cut], data.y.iloc[:cut]
         X_val, y_val, r_val = data.X.iloc[cut + gap:], data.y.iloc[cut + gap:], data.ret.iloc[cut + gap:]
-        rows, curves = [], None
+        rows, gen_rows, curves = [], [], None
+        r_tr = data.ret.iloc[:cut]
         for name, pipe in candidates.items():
             _log(exp_name, f"Step6: holdout fit of {name}")
             rep = evaluator.holdout(pipe, X_tr, y_tr, X_val, y_val, r_val, name=name)
-            rows.append(metrics_builder.build(rep.y_true, rep.y_pred, rep.next_logret, name=name)
-                        .assign(fit_time_s=rep.fit_time))
+            oos = metrics_builder.build(rep.y_true, rep.y_pred, rep.next_logret, name=name)
+            rows.append(oos.assign(fit_time_s=rep.fit_time))
+            # ml-pipe "generalization metrics": in-sample minus out-of-sample on the same fit
+            ins = metrics_builder.build(y_tr, evaluator.predict_scores(rep.estimator_, X_tr), r_tr, name=name)
+            gen_rows.append((ins - oos).assign(**{"in_sample_" + pm: float(ins[pm].iloc[0])}))
             if curves is None:
                 curves = lgbm_curves(pipe, X_tr, y_tr, X_val, y_val)
                 if curves:
                     curves["name"] = name
-        diag = {"split": f"chronological 80/20 (gap {gap})", "holdout": pd.concat(rows), "lgbm": curves}
+        diag = {"split": f"chronological 80/20 (gap {gap})", "holdout": pd.concat(rows), "lgbm": curves,
+                "generalization": pd.concat(gen_rows)}
 
     # Step7: Experiments
     experiments: dict[str, EvaluationReport] = {}

@@ -35,9 +35,10 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, clone
 from sklearn.calibration import CalibrationDisplay
-from scipy.stats import pearsonr, spearmanr
-from sklearn.metrics import (RocCurveDisplay, accuracy_score, balanced_accuracy_score, brier_score_loss,
-                             log_loss, matthews_corrcoef, mean_squared_error, r2_score, roc_auc_score)
+from scipy.stats import kendalltau, pearsonr, rankdata, spearmanr, wasserstein_distance, weightedtau
+from sklearn.metrics import (RocCurveDisplay, accuracy_score, balanced_accuracy_score, brier_score_loss, f1_score,
+                             log_loss, matthews_corrcoef, mean_absolute_error, mean_squared_error, precision_score,
+                             r2_score, recall_score, roc_auc_score)
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 
@@ -118,21 +119,43 @@ def daily_strategy(y_pred, fwd_ret, horizon: int = 24, cost_bps: float = DEFAULT
 
 def compute_return_metrics(y_true, y_pred, next_logret=None, cost_bps: float = DEFAULT_COST_BPS,
                            horizon: int = 24) -> dict[str, float]:
-    """Regression + sign metrics for forward-return predictions (ml-pipe's leaderboard set)."""
+    """ml-pipe's regression metric set for forward-return predictions.
+
+    Correlations ``spearman`` / ``pearson`` / ``kendall`` / ``weighted_tau`` (scipy ``weightedtau``,
+    NaN -> 0 as in ml-pipe), errors ``r2`` / ``mse`` / ``mae`` / ``wasserstein`` (distance between the
+    distributions of y and ŷ), sign metrics on ``y >= 0`` vs ``ŷ >= 0`` (ml-pipe's convention):
+    ``bin_acc`` (alias ``hit_rate``), ``f1``, ``precision``, ``recall``, ``mcc``, ``roc_auc`` (alias
+    ``auc``, ŷ as the score), and ``sharpe_ratio`` = ml-pipe's sign strategy on *every* row annualised
+    by 252 (overlapping labels, so it is optimistic). Our own daily non-overlapping read-out keeps the
+    names ``strategy_bps`` / ``sharpe``.
+    """
     y = np.asarray(y_true, dtype=float).ravel()
     p = np.asarray(y_pred, dtype=float).ravel()
-    up, pred_up = (y > 0).astype(int), (p > 0).astype(int)
+    up, pred_up = (y >= 0).astype(int), (p >= 0).astype(int)
     flat = np.nanstd(p) == 0
+    corr = lambda fn: float("nan") if flat else _safe(lambda a, b: fn(a, b).statistic, y, p)  # noqa: E731
+    wt = 0.0 if flat else _safe(lambda a, b: weightedtau(a, b).statistic, y, p)
+    strat = np.sign(p) * y
+    sd = strat.std(ddof=0)
     out = {
-        "spearman": float("nan") if flat else _safe(lambda a, b: spearmanr(a, b).statistic, y, p),
-        "pearson": float("nan") if flat else _safe(lambda a, b: pearsonr(a, b).statistic, y, p),
+        "spearman": corr(spearmanr),
+        "pearson": corr(pearsonr),
+        "kendall": corr(kendalltau),
+        "weighted_tau": 0.0 if np.isnan(wt) else wt,
         "r2": _safe(r2_score, y, p),
         "mse": _safe(mean_squared_error, y, p),
+        "mae": _safe(mean_absolute_error, y, p),
+        "wasserstein": _safe(wasserstein_distance, y, p),
         "mcc": _safe(matthews_corrcoef, up, pred_up),
-        "auc": _safe(roc_auc_score, up, p),
-        "hit_rate": float(np.mean(np.sign(p) == np.sign(y))),
+        "f1": _safe(f1_score, up, pred_up, zero_division=0),
+        "precision": _safe(precision_score, up, pred_up, zero_division=0),
+        "recall": _safe(recall_score, up, pred_up, zero_division=0),
+        "roc_auc": _safe(roc_auc_score, up, p),
+        "bin_acc": float(np.mean(up == pred_up)),
+        "sharpe_ratio": float(strat.mean() / sd * np.sqrt(252)) if sd > 0 else -1.0,
         "pred_up_share": float(pred_up.mean()),
     }
+    out["auc"], out["hit_rate"] = out["roc_auc"], out["bin_acc"]
     if next_logret is not None:
         _, net = daily_strategy(p, next_logret, horizon, cost_bps)
         sd = net.std(ddof=0)
@@ -145,8 +168,29 @@ def compute_return_metrics(y_true, y_pred, next_logret=None, cost_bps: float = D
 METRICS: dict[str, bool | None] = {
     "auc": True, "log_loss": False, "brier": False, "accuracy": True, "balanced_accuracy": True,
     "pred_up_share": None, "strategy_bps": True, "sharpe": True, "turnover": None,
-    "spearman": True, "pearson": True, "r2": True, "mse": False, "mcc": True, "hit_rate": True,
+    "spearman": True, "pearson": True, "kendall": True, "weighted_tau": True, "r2": True, "mse": False,
+    "mae": False, "wasserstein": False, "mcc": True, "f1": True, "precision": True, "recall": True,
+    "roc_auc": True, "bin_acc": True, "hit_rate": True, "sharpe_ratio": True, "rank_score": True,
 }
+
+# ml-pipe's leaderboard: rank each metric across models, weighted sum (``metrics_weights`` in the exp file)
+RANK_WEIGHTS = (("spearman", 1.0), ("pearson", 1.0), ("mse", 0.5), ("r2", 0.5), ("mcc", 0.5),
+                ("f1", 0.25), ("roc_auc", 0.25))
+
+
+def rank_score(board: pd.DataFrame, weights=RANK_WEIGHTS) -> pd.Series:
+    """Weighted sum of per-metric ranks (higher = better; lower-is-better metrics are rank-flipped)."""
+    total = pd.Series(0.0, index=board.index)
+    for name, w in weights:
+        if name not in board:
+            continue
+        v = board[name].astype(float)
+        if METRICS.get(name) is False:
+            v = -v
+        r = pd.Series(rankdata(v.fillna(v.min() - 1), nan_policy="omit"), index=board.index)
+        total += r * w
+    return total
+
 
 # task -> primary metric, tie-breaker (name, ascending)
 TASKS = {
@@ -162,14 +206,18 @@ TOD_BINS = [-1, 3, 7, 11, 15, 19, 23]
 TOD_LABELS = ["00-03", "04-07", "08-11", "12-15", "16-19", "20-23"]
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 SESSION_ORDER = ["tokyo", "tokyo+london", "london", "london+ny", "ny", "off-hours"]
-DEFAULT_SLICES = ("session", "time_of_day", "weekday", "volatility")
+DEFAULT_SLICES = ("session", "time_of_day", "weekday", "volatility", "regime")
+REGIME_LABELS = [f"{t} / {v}" for t in ("down-trend", "up-trend") for v in ("low vol", "mid vol", "high vol")]
 SLICE_ORDER = {
     "session": SESSION_ORDER,
     "time_of_day": TOD_LABELS,
     "weekday": WEEKDAYS,
     "volatility": ["low vol", "mid vol", "high vol"],
+    "regime": REGIME_LABELS,
     "confidence": ["<1pp", "1-2pp", "2-5pp", "5pp+"],
 }
+TREND_COLS = ("pct_change_w504_s0", "ret_mean_120")               # past ~21-day move (v002+) / 5-day (v001)
+VOL_COLS = ("change_volatility_w504_s0", "ret_std_24")
 CONF_BINS = [-0.001, 0.01, 0.02, 0.05, 1.0]
 
 
@@ -210,19 +258,32 @@ class DirectionSlicer:
             elif name == "weekday":
                 out[name] = X["weekday"].map(lambda d: WEEKDAYS[int(d)] if pd.notna(d) else "unknown")
             elif name == "volatility":
-                col = next((c for c in ("ret_std_24", "change_volatility_w24_s0") if c in X), None)
-                v = X[col] if col else pd.Series(np.nan, index=X.index)
-                try:
-                    lab = pd.qcut(v, 3, labels=SLICE_ORDER["volatility"]).astype(object)
-                except ValueError:
-                    lab = pd.Series(np.nan, index=X.index, dtype=object)
-                out[name] = lab.where(lab.notna(), "unknown")
+                out[name] = _tercile(X, ("ret_std_24", "change_volatility_w24_s0"), SLICE_ORDER["volatility"])
+            elif name == "regime":
+                # ml-pipe InferenceReporter "performance by past market regime": trend sign x volatility tercile
+                tcol = next((c for c in TREND_COLS if c in X), None)
+                vol = _tercile(X, VOL_COLS, ("low vol", "mid vol", "high vol"))
+                if tcol is None:
+                    out[name] = "unknown"
+                else:
+                    trend = np.where(X[tcol].astype(float) >= 0, "up-trend", "down-trend")
+                    out[name] = np.where(vol == "unknown", "unknown", pd.Series(trend, index=X.index) + " / " + vol)
             else:
                 raise ValueError(f"unknown slice {name!r}; choose from {DEFAULT_SLICES}")
         return out.astype(str)
 
 
 RETURN_CONF_LABELS = ["q1 (smallest |pred|)", "q2", "q3", "q4 (largest |pred|)"]
+
+
+def _tercile(X: pd.DataFrame, candidates, labels) -> pd.Series:
+    col = next((c for c in candidates if c in X), None)
+    v = X[col].astype(float) if col else pd.Series(np.nan, index=X.index)
+    try:
+        lab = pd.qcut(v, 3, labels=list(labels)).astype(object)
+    except ValueError:
+        lab = pd.Series(np.nan, index=X.index, dtype=object)
+    return lab.where(lab.notna(), "unknown").astype(str)
 
 
 def confidence_labels(scores, task: str = "direction") -> np.ndarray:
@@ -329,8 +390,11 @@ class EvaluationReport:
 def leaderboard(reports: dict[str, EvaluationReport]) -> pd.DataFrame:
     """Models sorted by the task's primary metric (``auc`` / ``spearman``, desc), then the tie-breaker."""
     board = pd.concat([r.summary_frame() for r in reports.values()])
-    task = TASKS[next(iter(reports.values())).task]
+    kind = next(iter(reports.values())).task
+    task = TASKS[kind]
     tb, tb_asc = task["tiebreak"]
+    if kind == "return" and len(board) > 1:
+        board["rank_score"] = rank_score(board)
     return board.sort_values([task["primary"], tb], ascending=[False, tb_asc])
 
 
@@ -519,8 +583,9 @@ def style_table(df: pd.DataFrame, digits: int = 4, caption: str | None = None, h
 
 def style_leaderboard(board: pd.DataFrame, caption: str | None = None):
     if "spearman" in board:
-        cols = ("spearman", "spearman_fold_std", "pearson", "r2", "mse", "mcc", "auc", "hit_rate",
-                "strategy_bps", "sharpe", "n", "fit_time_s")
+        cols = ("spearman", "spearman_fold_std", "pearson", "kendall", "weighted_tau", "r2", "mse", "mae",
+                "wasserstein", "mcc", "f1", "precision", "recall", "roc_auc", "bin_acc", "sharpe_ratio",
+                "strategy_bps", "sharpe", "rank_score", "n", "fit_time_s")
     else:
         cols = ("auc", "auc_fold_std", "log_loss", "brier", "accuracy", "balanced_accuracy",
                 "strategy_bps", "sharpe", "turnover", "n", "fit_time_s")

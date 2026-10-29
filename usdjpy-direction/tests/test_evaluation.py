@@ -57,7 +57,7 @@ def test_slices_report_and_save(dev, tmp_path):
                                  "momentum": make_candidate("momentum")}, X, y, r)
     assert list(board.columns)[:2] == ["auc", "log_loss"]
     s = DirectionSlicer().transform(X)
-    assert set(s.columns) == {"session", "time_of_day", "weekday", "volatility"}
+    assert set(s.columns) == {"session", "time_of_day", "weekday", "volatility", "regime"}
     rep = reports["momentum"]
     for name in ("session", "confidence", "weekday"):
         t = rep.slice_table(name)

@@ -3,7 +3,8 @@
 Only :func:`fetch_bars` touches the network (``make fetch``). Every experiment reads the
 cached CSV, so a run is reproducible until the cache is refreshed.
 
-    python -m usdjpy.data --ticker USDJPY=X --period 729d     # what `make fetch` runs
+    python -m usdjpy.data --ticker USDJPY=X --period 729d     # USDJPY only
+    python -m usdjpy.data --basket                            # USDJPY + the cross-asset BASKET (`make fetch`)
 """
 
 from __future__ import annotations
@@ -21,6 +22,20 @@ INTERVAL = "1h"
 OHLC = ["open", "high", "low", "close"]
 BAR = pd.Timedelta(hours=1)
 
+# cross-asset universe for v003+: name -> yfinance ticker. Grouped so ladders can slice by group.
+BASKET_GROUPS = {
+    "fx": {"EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "AUDUSD": "AUDUSD=X", "NZDUSD": "NZDUSD=X",
+           "USDCHF": "USDCHF=X", "USDCAD": "USDCAD=X", "EURJPY": "EURJPY=X", "GBPJPY": "GBPJPY=X",
+           "AUDJPY": "AUDJPY=X", "NZDJPY": "NZDJPY=X", "CADJPY": "CADJPY=X", "CHFJPY": "CHFJPY=X",
+           "EURGBP": "EURGBP=X", "EURCHF": "EURCHF=X", "DXY": "DX-Y.NYB"},
+    "rates": {"US10Y": "^TNX", "US5Y": "^FVX", "US13W": "^IRX", "US30Y": "^TYX"},
+    "equity": {"N225": "^N225", "SPX": "^GSPC", "VIX": "^VIX", "FTSE": "^FTSE", "DAX": "^GDAXI", "HSI": "^HSI"},
+    "commodity": {"GOLD": "GC=F", "OIL": "CL=F", "SILVER": "SI=F", "COPPER": "HG=F"},
+    "crypto": {"BTC": "BTC-USD"},
+}
+BASKET = {name: tk for group in BASKET_GROUPS.values() for name, tk in group.items()}
+ASSET_GROUP = {name: g for g, members in BASKET_GROUPS.items() for name in members}
+
 _HERE = Path(__file__).resolve().parent
 
 
@@ -33,6 +48,10 @@ def data_dir() -> Path:
 def cache_path(ticker: str = TICKER, interval: str = INTERVAL) -> Path:
     slug = ticker.lower().replace("=x", "").replace("^", "").replace("=", "")
     return data_dir() / f"{slug}_{interval}.csv"
+
+
+def basket_path(name: str, interval: str = INTERVAL) -> Path:
+    return data_dir() / "basket" / f"{name.lower()}_{interval}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +102,71 @@ def load_bars(path: str | os.PathLike | None = None) -> pd.DataFrame:
     return df[OHLC].astype(float).sort_index()
 
 
+def fetch_basket(names=None, interval: str = INTERVAL, period: str = "729d") -> dict[str, pd.DataFrame]:
+    """Download every basket asset to ``dataset/basket/<name>_1h.csv``; failures are logged, not fatal."""
+    names = list(names or BASKET)
+    out = {}
+    for name in names:
+        ticker = BASKET.get(name, name)
+        try:
+            bars = fetch_bars(ticker, interval, period, path=basket_path(name, interval))
+        except Exception as e:  # noqa: BLE001  (one bad ticker must not kill the fetch)
+            print(f"[fetch] {name} ({ticker}): FAILED {type(e).__name__}: {e}", flush=True)
+            continue
+        out[name] = bars
+        print(f"[fetch] {name:7s} ({ticker:9s}): {len(bars):6,} bars {bars.index[0]:%Y-%m-%d} -> "
+              f"{bars.index[-1]:%Y-%m-%d %H:%M}", flush=True)
+    return out
+
+
+def load_basket(names=None, interval: str = INTERVAL, strict: bool = False) -> dict[str, pd.DataFrame]:
+    """Cached basket assets as ``name -> OHLC`` frames; missing files are skipped (or raise if ``strict``)."""
+    names = list(names or BASKET)
+    out = {}
+    for name in names:
+        path = basket_path(name, interval)
+        if not path.exists():
+            if strict:
+                raise FileNotFoundError(f"{path} not found; run `make fetch`")
+            print(f"[basket] {name}: no cache at {path}, skipped", flush=True)
+            continue
+        out[name] = load_bars(path)
+    return out
+
+
+def align_basket(basket: dict[str, pd.DataFrame], grid: pd.DatetimeIndex, max_nan_share: float = 0.3,
+                 min_fresh_share: float = 0.1, stale: bool = True) -> pd.DataFrame:
+    """Basket closes on the USDJPY grid.
+
+    ``close_<name>`` = the last print at or before each grid hour (as-of join, ml-pipe's
+    ``reindex(..., method="ffill")`` for non-FX sources; exchange series print at :30 so an exact match
+    would miss them). ``stale_<name>`` = hours since that print (0-1 while the market trades, rising
+    through a close/weekend). An asset is dropped when it has no print yet on more than
+    ``max_nan_share`` of the grid (starts too late) or a fresh print (<= 1h old) on fewer than
+    ``min_fresh_share`` of the grid hours (too sparse to carry hourly information).
+    """
+    cols = {}
+    grid = pd.DatetimeIndex(grid)
+    for name, bars in basket.items():
+        c = bars["close"].astype(float).dropna()
+        c = c[~c.index.duplicated(keep="last")].sort_index()
+        filled = c.reindex(grid, method="ffill")
+        last_print = pd.DatetimeIndex(c.index.to_series().reindex(grid, method="ffill"))
+        age = ((grid - last_print) / BAR).astype(float)
+        nan_share = float(filled.isna().mean())
+        fresh_share = float((age <= 1.0).mean())
+        if nan_share > max_nan_share or fresh_share < min_fresh_share:
+            print(f"[basket] {name}: {nan_share:.0%} not yet listed, {fresh_share:.0%} fresh hours -> dropped",
+                  flush=True)
+            continue
+        cols[f"close_{name}"] = filled
+        if stale:
+            cols[f"stale_{name}"] = age
+    return pd.DataFrame(cols, index=grid)
+
+
 # ---------------------------------------------------------------------------
-# target
+# targets + split
 # ---------------------------------------------------------------------------
 def make_target(bars: pd.DataFrame) -> pd.DataFrame:
     """Label each bar with the direction of the *next* hourly close.
@@ -171,12 +253,18 @@ def main(argv=None) -> int:
     p.add_argument("--ticker", default=TICKER)
     p.add_argument("--interval", default=INTERVAL)
     p.add_argument("--period", default="729d")
+    p.add_argument("--basket", action="store_true", help="also fetch the cross-asset BASKET")
+    p.add_argument("--basket-names", default=None, help="comma separated subset of BASKET names")
     args = p.parse_args(argv)
     bars = fetch_bars(args.ticker, args.interval, args.period)
     path = cache_path(args.ticker, args.interval)
     gaps = (bars.index.to_series().diff() > BAR).sum()
     print(f"[fetch] {args.ticker} {args.interval}: {len(bars):,} bars "
           f"{bars.index[0]} -> {bars.index[-1]} ({gaps} gaps) -> {path}")
+    if args.basket or args.basket_names:
+        names = [n.strip() for n in args.basket_names.split(",")] if args.basket_names else None
+        got = fetch_basket(names, args.interval, args.period)
+        print(f"[fetch] basket: {len(got)}/{len(names or BASKET)} assets cached under {data_dir() / 'basket'}")
     return 0
 
 

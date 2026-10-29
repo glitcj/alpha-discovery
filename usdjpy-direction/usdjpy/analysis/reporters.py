@@ -15,8 +15,9 @@ from typing import Any, Protocol
 import numpy as np
 import pandas as pd
 
-from ..data import BAR
+from ..data import ASSET_GROUP, BAR
 from ..evaluation import (feature_importance, leaderboard, plot_report, style_leaderboard, style_table)
+from ..features import asset_of, feature_type_of
 from .display import display_dataframe, display_figure, display_info_box, display_markdown, display_title
 
 
@@ -137,16 +138,27 @@ class FeatureSummaryReporter:
     def __init__(self, top: int = 15):
         self.top = top
 
-    def display(self, *, X: pd.DataFrame, ret: pd.Series, **_):
+    def display(self, *, X: pd.DataFrame, ret: pd.Series, task: str = "direction", **_):
+        what = "forward return" if task == "return" else "next-hour return"
         desc = X.describe().T[["mean", "std", "min", "max"]]
         desc["missing"] = X.isna().mean()
         corr = X.corrwith(ret, method="spearman")
-        desc["spearman_next_ret"] = corr
+        desc["spearman_target"] = corr
         desc = desc.reindex(corr.abs().sort_values(ascending=False).index)
-        display_dataframe(desc.head(self.top), f"top {self.top} features by |Spearman ρ| with next-hour return",
+        display_dataframe(desc.head(self.top), f"top {self.top} of {X.shape[1]:,} features by |Spearman ρ| with the {what}",
                           highlight_best=False, bars=False)
         display_markdown(f"Largest |ρ| = {corr.abs().max():.4f} (n = {len(X):,}; ±2σ noise ≈ "
                          f"{2 / np.sqrt(len(X)):.4f}). Single features carry very little linear signal.")
+        # ml-pipe Steps 8-9: importance grouped by asset and by feature type (mean |ρ| over the group)
+        groups = pd.DataFrame({"abs_rho": corr.abs(), "asset": [asset_of(c) for c in corr.index],
+                               "type": [feature_type_of(c) for c in corr.index]})
+        if groups["asset"].nunique() > 1:
+            by_asset = groups.groupby("asset")["abs_rho"].agg(["mean", "max", "size"]).sort_values("mean", ascending=False)
+            by_asset["group"] = [ASSET_GROUP.get(a, "target") for a in by_asset.index]
+            display_dataframe(by_asset, "mean |Spearman ρ| by asset (ml-pipe 'contemporary asset importance')",
+                              highlight_best=False, bars=False)
+        by_type = groups.groupby("type")["abs_rho"].agg(["mean", "max", "size"]).sort_values("mean", ascending=False)
+        display_dataframe(by_type, "mean |Spearman ρ| by feature type", highlight_best=False, bars=False)
 
 
 class PreAnalysisReporter:
@@ -223,6 +235,12 @@ class TrainingReporter:
             display_info_box("diagnostics disabled for this run.", kind="warning")
             return
         display_dataframe(style_leaderboard(diag["holdout"], caption=diag["split"]))
+        gen = diag.get("generalization")
+        if gen is not None:
+            keep = [c for c in gen.columns if c in diag["holdout"].columns and c != "fit_time_s"] + \
+                   [c for c in gen.columns if c.startswith("in_sample_")]
+            display_dataframe(gen[keep], "generalization gap: in-sample − out-of-sample on the same fit "
+                                         "(ml-pipe Step 9; large positive = overfit)", highlight_best=False, bars=False)
         c = diag.get("lgbm")
         if not c:
             display_info_box("no LightGBM candidate — no training curves.", kind="warning")
@@ -260,7 +278,7 @@ class ExperimentsReporter:
 class SliceReporter:
     """Where does the winner do better or worse? Out-of-fold metrics per slice."""
 
-    def __init__(self, slices=("session", "time_of_day", "weekday", "volatility", "confidence")):
+    def __init__(self, slices=("session", "time_of_day", "weekday", "volatility", "regime", "confidence")):
         self.slices = slices
 
     def display(self, result, **_):
@@ -274,6 +292,61 @@ class SliceReporter:
         display_markdown("Read the confidence table first: a usable model's hit rate should rise with "
                          f"{what}. Here the top bucket hits {conf[col].iloc[-1]:.3f} "
                          f"on n = {int(conf['n'].iloc[-1])}.")
+
+
+class ResidualReporter:
+    """Residual diagnostics of the winner's out-of-fold predictions (return task; ml-pipe ResidualReporter).
+
+    Residual ACF to ``acf_lags`` bars, rolling means (trend), rolling std (heteroskedasticity),
+    Jarque-Bera normality and the ARCH-LM test via ``statsmodels`` when installed.
+    """
+
+    def __init__(self, acf_lags: int = 120, trend_windows=(240, 504, 1512), std_window: int = 504, figsize=(11, 3.2)):
+        self.acf_lags = acf_lags
+        self.trend_windows = trend_windows
+        self.std_window = std_window
+        self.figsize = figsize
+
+    def display(self, result, **_):
+        best = result.best
+        if best.task != "return":
+            display_info_box("residual diagnostics apply to the return task only.", kind="warning")
+            return
+        res = pd.Series(np.asarray(best.y_true, float) - best.y_pred, index=best.index, name="residual")
+        n = len(res)
+        lags = list(range(1, self.acf_lags + 1))
+        acf = pd.Series([res.autocorr(k) for k in lags], index=lags)
+        band = 1.96 / np.sqrt(n)
+        plt = _plt()
+        fig, axes = plt.subplots(1, 3, figsize=(self.figsize[0] * 1.2, self.figsize[1]))
+        axes[0].bar(acf.index, acf.to_numpy(), color="#2f5597", width=1.0)
+        axes[0].axhspan(-band, band, color="#cccccc", alpha=0.5)
+        axes[0].set_title("residual ACF (overlapping labels ⇒ high to the horizon)")
+        axes[0].set_xlabel("lag (bars)")
+        for w in self.trend_windows:
+            axes[1].plot(res.index, res.rolling(w).mean() * 1e4, lw=1, label=f"{w} bars")
+        axes[1].axhline(0, color="black", lw=0.6)
+        axes[1].set_title("rolling mean residual (bp): trend / bias")
+        axes[1].legend(fontsize=7)
+        axes[2].plot(res.index, res.rolling(self.std_window).std() * 1e4, lw=1, color="#2f5597")
+        axes[2].set_title(f"rolling {self.std_window}-bar residual std (bp): heteroskedasticity")
+        for ax in axes[1:]:
+            ax.tick_params(axis="x", labelrotation=30, labelsize=7)
+        fig.tight_layout()
+        display_figure(fig)
+        notes = [f"mean residual {res.mean() * 1e4:+.2f} bp (bias), std {res.std() * 1e4:.1f} bp, "
+                 f"|ACF| beyond ±{band:.3f} at {int((acf.abs() > band).sum())}/{self.acf_lags} lags"]
+        try:
+            from scipy.stats import jarque_bera
+            from statsmodels.stats.diagnostic import het_arch
+
+            jb = jarque_bera(res.to_numpy())
+            arch = het_arch(res.to_numpy(), nlags=24)
+            notes.append(f"Jarque-Bera p = {jb.pvalue:.3g} (normality), ARCH-LM(24) p = {arch[1]:.3g} "
+                         "(volatility clustering); p < 0.05 rejects.")
+        except ImportError:
+            notes.append("statsmodels not installed: Jarque-Bera / ARCH-LM skipped.")
+        display_markdown(" ".join(notes))
 
 
 class ImportanceReporter:
@@ -338,6 +411,7 @@ class PostAnalysisReporter:
             "Diagnostics": TrainingReporter(),
             "Experiments": ExperimentsReporter(),
             "Slices": SliceReporter(),
+            "Residuals": ResidualReporter(),
             "Feature importance": ImportanceReporter(),
             "Holdout": HoldoutReporter(),
         }
