@@ -103,23 +103,58 @@ def make_target(bars: pd.DataFrame) -> pd.DataFrame:
     return out[ok.to_numpy()]
 
 
-def split_holdout(index: pd.Index, frac: float = 0.15) -> tuple[pd.Index, pd.Index]:
-    """Chronological split: the last ``frac`` of the rows is the untouched holdout."""
+def make_forward_return_target(bars: pd.DataFrame, horizon: int = 24, offset: int = 1) -> pd.DataFrame:
+    """ml-pipe's ``FWDLogReturn(lookahead_window=horizon, lookahead_offset=offset)``.
+
+    ``y_t = log(close[t + offset + horizon] / close[t + offset])``: the log return over the next
+    ``horizon`` bars, starting ``offset`` bars after t (a buffer for acting on the signal). Shifts
+    are positional, so on the FX-week grid a label can span a weekend, as in ml-pipe. Returns
+    ``y`` and ``next_logret`` (the same values, used by the trading read-out).
+    """
+    if horizon < 1 or offset < 0:
+        raise ValueError("horizon must be >= 1 and offset >= 0")
+    close = bars["close"].astype(float)
+    y = np.log(close.shift(-(offset + horizon)) / close.shift(-offset))
+    out = pd.DataFrame({"y": y, "next_logret": y}, index=bars.index)
+    return out.dropna()
+
+
+def split_holdout(index: pd.Index, frac: float = 0.15, purge: int = 0) -> tuple[pd.Index, pd.Index]:
+    """Chronological split: the last ``frac`` of the rows is the untouched holdout.
+
+    ``purge`` drops that many rows just before the holdout, so no development label (which looks
+    ``offset + horizon`` bars ahead) is computed from holdout prices.
+    """
     if not 0 < frac < 1:
         raise ValueError("frac must be in (0, 1)")
+    if purge < 0:
+        raise ValueError("purge must be >= 0")
     index = pd.Index(index).sort_values()
     n_hold = max(1, int(round(len(index) * frac)))
-    return index[:-n_hold], index[-n_hold:]
+    return index[:-(n_hold + purge)], index[-n_hold:]
 
 
-def write_predictions(index, p_up, path, y_true=None, next_logret=None) -> pd.DataFrame:
-    """``timestamp, p_up, pred[, y_true, next_logret]`` for the holdout (or any) rows."""
-    p = np.asarray(p_up, dtype=float).ravel()
+def write_predictions(index, scores, path, y_true=None, next_logret=None, task: str = "direction") -> pd.DataFrame:
+    """Holdout (or any) predictions.
+
+    ``task="direction"``: ``timestamp, p_up, pred[, y_true, next_logret]``;
+    ``task="return"``:    ``timestamp, y_pred, pred_sign[, y_true]`` (predicted forward log return).
+    """
+    p = np.asarray(scores, dtype=float).ravel()
     if len(p) != len(index):
         raise ValueError(f"{len(index)} timestamps but {len(p)} predictions")
     if not np.isfinite(p).all():
         raise ValueError("predictions contain NaN/inf")
-    out = pd.DataFrame({"p_up": p, "pred": (p > 0.5).astype(int)}, index=pd.Index(index, name="timestamp"))
+    idx = pd.Index(index, name="timestamp")
+    if task == "return":
+        out = pd.DataFrame({"y_pred": p, "pred_sign": np.sign(p).astype(int)}, index=idx)
+        if y_true is not None:
+            out["y_true"] = np.asarray(y_true, dtype=float)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(path)
+        return out
+    out = pd.DataFrame({"p_up": p, "pred": (p > 0.5).astype(int)}, index=idx)
     if y_true is not None:
         out["y_true"] = np.asarray(y_true, dtype=int)
     if next_logret is not None:

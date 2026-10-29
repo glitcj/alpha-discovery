@@ -1,21 +1,33 @@
 {
-  "exp_name": "v001_lgbm_walkforward",
+  "exp_name": "v002_fwd_logret_1d",
   "ticker": "USDJPY=X",
   "seed": 0,
-  "cv": "TimeSeriesSplit(gap=24, max_train_size=None, n_splits=5, test_size=None)",
+  "task": "return",
+  "primary_metric": "spearman",
+  "target": {
+    "kind": "forward log return over 24 bars after a 1-bar buffer",
+    "horizon": 24,
+    "offset": 1,
+    "ml_pipe_equivalent": "FWDLogReturn(48, 1) on 30-min bars"
+  },
+  "purge": 25,
+  "cv": "TimeSeriesSplit(gap=274, max_train_size=None, n_splits=5, test_size=None)",
   "cost_bps": 0.5,
-  "n_bars": 17137,
+  "n_features": 243,
+  "n_bars": 17472,
   "bars_start": "2024-01-15 00:00:00+00:00",
   "bars_end": "2026-10-28 22:00:00+00:00",
-  "n_dev": 14270,
-  "dev_start": "2024-01-22 02:00:00+00:00",
-  "dev_end": "2026-05-29 17:00:00+00:00",
-  "n_holdout": 2518,
-  "holdout_start": "2026-05-29 18:00:00+00:00",
-  "holdout_end": "2026-10-28 21:00:00+00:00",
-  "dev_up_share": 0.5121934127540294,
-  "holdout_up_share": 0.5218427323272439,
-  "started_at": "2026-10-29T00:32:01+00:00",
+  "n_dev": 13500,
+  "dev_start": "2024-04-11 22:00:00+00:00",
+  "dev_end": "2026-06-09 09:00:00+00:00",
+  "n_holdout": 2387,
+  "holdout_start": "2026-06-10 11:00:00+00:00",
+  "holdout_end": "2026-10-27 21:00:00+00:00",
+  "dev_up_share": 0.5625185185185185,
+  "holdout_up_share": 0.5906996229576875,
+  "dev_y_mean": 8.146670316763898e-05,
+  "dev_y_std": 0.0063031651160344905,
+  "started_at": "2026-10-29T01:11:41+00:00",
   "versions": {
     "usdjpy": "0.1.0",
     "sklearn": "1.9.1",
@@ -24,10 +36,12 @@
     "python": "3.12.14"
   },
   "candidates": [
-    "majority",
-    "momentum",
-    "logreg",
-    "lgbm"
+    "persistence",
+    "mean",
+    "best_feature",
+    "random",
+    "ridge",
+    "lgbm_reg"
   ],
-  "wall_time_s": 16.5
+  "wall_time_s": 31.3
 }

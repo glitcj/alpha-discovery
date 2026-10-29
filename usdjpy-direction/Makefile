@@ -1,4 +1,4 @@
-# USDJPY 1-hour direction classification — everything runs inside the Docker image.
+# USDJPY 1-day forward log return (v002) / 1-hour direction (v001) — everything runs inside the Docker image.
 IMAGE  ?= usdjpy-direction
 MOUNTS := -v $(CURDIR):/app
 RUN    := docker run --rm $(MOUNTS) $(IMAGE)
@@ -6,12 +6,13 @@ RUN_IT := docker run --rm -it $(MOUNTS) $(IMAGE)
 
 # what `make run` executes inside the container, e.g. make run FILE="-m usdjpy.train --n-rows 3000 --cv 3"
 FILE   ?= -m usdjpy.train --help
-# experiment module under usdjpy/exp/ and candidate subset for `make train` / `make evaluate`
-EXP    ?= v001_lgbm_walkforward
-MODELS ?= majority,momentum,logreg,lgbm
+# experiment module under usdjpy/exp/ and candidate subset for `make train` / `make evaluate` (empty = the arm's set)
+EXP    ?= v002_fwd_logret_1d
+MODELS ?=
 CV     ?= 5
 SEED   ?= 0
 COST   ?= 0.5
+TASK   ?= return
 PORT   ?= 8899
 # yfinance download settings for `make fetch` (Yahoo serves 1h bars for the last ~730 days only)
 TICKER ?= USDJPY=X
@@ -51,16 +52,16 @@ lint: ## byte-compile the package and tests
 	$(RUN) python -m compileall -q usdjpy tests
 
 evaluate: ## walk-forward CV of the experiment's candidates, print the leaderboard (no refit/holdout)
-	$(RUN) python -m usdjpy.train --exp $(EXP) --models $(MODELS) --cv $(CV) --seed $(SEED) --cost-bps $(COST) --evaluate-only
+	$(RUN) python -m usdjpy.train --exp $(EXP) $(if $(MODELS),--models $(MODELS),) --cv $(CV) --seed $(SEED) --cost-bps $(COST) --evaluate-only
 
 train: ## run experiment EXP end-to-end: CV, pick best, refit, score the holdout, write outputs/predictions.csv
-	$(RUN) python -m usdjpy.train --exp $(EXP) --models $(MODELS) --cv $(CV) --seed $(SEED) --cost-bps $(COST)
+	$(RUN) python -m usdjpy.train --exp $(EXP) $(if $(MODELS),--models $(MODELS),) --cv $(CV) --seed $(SEED) --cost-bps $(COST)
 
-predict: ## P(up) for the next hour from the latest cached bar and the saved model (run `make fetch` first)
+predict: ## forecast from the latest cached bar with the saved model (run `make fetch` first)
 	$(RUN) python -m usdjpy.train --predict-only
 
-experiments: ## run the experiment ladder -> outputs/experiments.json
-	$(RUN) python -m usdjpy.experiments --cv $(CV) --seed $(SEED) --cost-bps $(COST)
+experiments: ## run the experiment ladder (TASK=return|direction) -> outputs/experiments.json
+	$(RUN) python -m usdjpy.experiments --task $(TASK) --cv $(CV) --seed $(SEED) --cost-bps $(COST)
 
 run-report: ## re-execute NB (default REPORT.ipynb) in place so its outputs are fresh; fails on any error output
 	$(RUN) jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=1800 "$(NB)"

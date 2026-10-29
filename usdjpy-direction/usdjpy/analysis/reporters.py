@@ -57,24 +57,39 @@ class CoverageReporter:
 
 
 class TargetReporter:
-    """Hourly return distribution and class balance (overall, by hour of day)."""
+    """Target distribution and up share (overall, by hour of day); for the forward-return task also
+    the label autocorrelation (overlapping labels are strongly autocorrelated up to the horizon)."""
 
-    def __init__(self, figsize=(11, 3.4)):
+    def __init__(self, figsize=(11, 3.4), acf_lags: int = 120):
         self.figsize = figsize
+        self.acf_lags = acf_lags
 
-    def display(self, *, y: pd.Series, ret: pd.Series, X: pd.DataFrame, **_):
+    def display(self, *, y: pd.Series, ret: pd.Series, X: pd.DataFrame, task: str = "direction", **_):
+        what = "forward log return" if task == "return" else "next-hour return"
         r = ret * 1e4
+        up = (ret > 0).astype(float)
         stats = pd.DataFrame({"mean_bp": [r.mean()], "std_bp": [r.std()], "skew": [r.skew()],
                               "kurtosis": [r.kurt()], "p01_bp": [r.quantile(0.01)], "p99_bp": [r.quantile(0.99)],
-                              "up_share": [y.mean()], "n": [len(y)]}, index=pd.Index(["next-hour return"]))
-        display_dataframe(stats, "target: next-hour log return (basis points) and up share", highlight_best=False,
-                          bars=False)
+                              "up_share": [up.mean()], "n": [len(y)]}, index=pd.Index([what]))
+        display_dataframe(stats, f"target: {what} (basis points) and up share", highlight_best=False, bars=False)
+        if task == "return":
+            lags = list(range(1, self.acf_lags + 1))
+            acf = pd.Series([y.autocorr(k) for k in lags], index=lags)
+            plt = _plt()
+            fig, ax = plt.subplots(figsize=(self.figsize[0], 2.8))
+            ax.bar(acf.index, acf.to_numpy(), color="#2f5597", width=1.0)
+            ax.axhline(0, color="black", lw=0.6)
+            ax.set_xlabel("lag (bars)")
+            ax.set_title("label autocorrelation (overlapping windows → ACF decays to 0 at the horizon)")
+            fig.tight_layout()
+            display_figure(fig)
+        y = up
         by_hour = pd.DataFrame({"up_share": y.groupby(X["hour"]).mean(),
                                 "mean_bp": r.groupby(X["hour"]).mean(), "n": y.groupby(X["hour"]).size()})
         plt = _plt()
         fig, axes = plt.subplots(1, 2, figsize=self.figsize)
         axes[0].hist(r.clip(r.quantile(0.005), r.quantile(0.995)), bins=80, color="#2f5597")
-        axes[0].set_xlabel("next-hour log return (bp, clipped 0.5–99.5%)")
+        axes[0].set_xlabel(f"{what} (bp, clipped 0.5–99.5%)")
         axes[0].set_title("return distribution")
         axes[1].bar(by_hour.index, by_hour["up_share"] - 0.5, color="#2f5597")
         axes[1].axhline(0, color="black", lw=0.6)
@@ -160,8 +175,9 @@ class DataReporter:
 
     def display(self, result, **_):
         m = result.meta
+        tgt = m.get("target", {})
         display_info_box(
-            f"{m['ticker']} · bars {m['bars_start'][:16]} → {m['bars_end'][:16]} · dev rows <b>{m['n_dev']:,}</b> "
+            f"task <b>{m.get('task', 'direction')}</b> ({tgt.get('kind', 'next-bar direction')}) · {m['ticker']} · bars {m['bars_start'][:16]} → {m['bars_end'][:16]} · dev rows <b>{m['n_dev']:,}</b> "
             f"(up {m['dev_up_share']:.3f}) · holdout rows <b>{m['n_holdout']:,}</b> from {m['holdout_start'][:16]} "
             f"(up {m['holdout_up_share']:.3f}) · cv {m['cv']} · cost {m['cost_bps']} bp · seed {m['seed']} · "
             f"candidates {', '.join(m['candidates'])}")
@@ -177,10 +193,15 @@ class LeaderboardReporter:
         display_dataframe(style_leaderboard(result.board, caption=f"{result.meta['cv']} — out-of-fold"))
         best = result.best
         o = best.overall
-        display_info_box(
-            f"Selected model: <b>{result.best_name}</b> — CV AUC <b>{o['auc']:.4f}</b>, accuracy {o['accuracy']:.4f}, "
-            f"log loss {o['log_loss']:.4f}, sign strategy {o['strategy_bps']:+.3f} bp/bar (Sharpe {o['sharpe']:.2f}).",
-            kind="success")
+        if best.task == "return":
+            msg = (f"Selected model: <b>{result.best_name}</b> — CV Spearman <b>{o['spearman']:+.4f}</b>, "
+                   f"Pearson {o['pearson']:+.4f}, R² {o['r2']:+.4f}, sign hit rate {o['hit_rate']:.4f} "
+                   f"(MCC {o['mcc']:+.4f}), daily sign trade {o['strategy_bps']:+.2f} bp/day (Sharpe {o['sharpe']:.2f}).")
+        else:
+            msg = (f"Selected model: <b>{result.best_name}</b> — CV AUC <b>{o['auc']:.4f}</b>, accuracy "
+                   f"{o['accuracy']:.4f}, log loss {o['log_loss']:.4f}, sign strategy {o['strategy_bps']:+.3f} bp/bar "
+                   f"(Sharpe {o['sharpe']:.2f}).")
+        display_info_box(msg, kind="success")
         if self.show_folds and best.folds is not None:
             cols = ["test_start", "test_end", "n_train", "n_test"] + [c for c in best.folds if c.startswith("test_")
                                                                       and c not in ("test_start", "test_end")]
@@ -207,21 +228,20 @@ class TrainingReporter:
             display_info_box("no LightGBM candidate — no training curves.", kind="warning")
             return
         plt = _plt()
-        fig, axes = plt.subplots(1, 2, figsize=self.figsize)
-        it = np.arange(1, len(c["train_logloss"]) + 1)
-        axes[0].plot(it, c["train_logloss"], label="train")
-        axes[0].plot(it, c["valid_logloss"], label="valid")
-        axes[0].set_title("binary log loss")
-        axes[1].plot(it, c["train_auc"], label="train")
-        axes[1].plot(it, c["valid_auc"], label="valid")
-        axes[1].axvline(c["best_iter"], color="#888888", ls="--", lw=0.8)
-        axes[1].set_title("AUC")
-        for ax in axes:
+        curves = c["curves"]
+        fig, axes = plt.subplots(1, len(curves), figsize=self.figsize)
+        for ax, (metric, cv) in zip(np.atleast_1d(axes), curves.items()):
+            it = np.arange(1, len(cv["train"]) + 1)
+            ax.plot(it, cv["train"], label="train")
+            ax.plot(it, cv["valid"], label="valid")
+            if metric == c["best_metric"]:
+                ax.axvline(c["best_iter"], color="#888888", ls="--", lw=0.8)
+            ax.set_title(metric)
             ax.set_xlabel("boosting iteration")
             ax.legend(fontsize=8)
         fig.tight_layout()
         display_figure(fig)
-        display_markdown(f"`{c['name']}`: best validation AUC {c['best_valid_auc']:.4f} at iteration "
+        display_markdown(f"`{c['name']}`: best validation {c['best_metric']} {c['best_valid']:.4f} at iteration "
                          f"{c['best_iter']} of {c['n_estimators']}. A widening train/valid gap means the extra "
                          "trees fit noise.")
 
@@ -249,8 +269,10 @@ class SliceReporter:
             display_dataframe(style_table(best.slice_table(s), highlight_best=False),
                               f"{result.best_name} by {s}")
         conf = best.slice_table("confidence")
+        col = "accuracy" if "accuracy" in conf else "hit_rate"
+        what = "|P(up) − 0.5|" if col == "accuracy" else "the size of the predicted return"
         display_markdown("Read the confidence table first: a usable model's hit rate should rise with "
-                         f"|P(up) − 0.5|. Here the top bucket hits {conf['accuracy'].iloc[-1]:.3f} "
+                         f"{what}. Here the top bucket hits {conf[col].iloc[-1]:.3f} "
                          f"on n = {int(conf['n'].iloc[-1])}.")
 
 
@@ -290,6 +312,15 @@ class HoldoutReporter:
         display_dataframe(style_leaderboard(pd.concat([cv, ho]), caption=f"holdout {hold.index[0]:%Y-%m-%d} → "
                                                                          f"{hold.index[-1]:%Y-%m-%d}"))
         display_figure(plot_report(hold))
+        if hold.task == "return":
+            o = hold.overall
+            rho = o["spearman"]
+            kind = "success" if rho > 0.03 else ("warning" if rho > 0 else "error")
+            display_info_box(f"Holdout Spearman <b>{rho:+.4f}</b> on {len(hold.y_true):,} hourly rows "
+                             f"(≈ {len(hold.y_true) // hold.horizon} independent days); sign hit rate "
+                             f"{o['hit_rate']:.3f}; daily sign trade {o['strategy_bps']:+.2f} bp/day after "
+                             f"{hold.cost_bps} bp costs. Spearman near 0 means no usable return signal.", kind=kind)
+            return
         auc = hold.auc
         kind = "success" if auc > 0.52 else ("warning" if auc > 0.5 else "error")
         display_info_box(f"Holdout AUC <b>{auc:.4f}</b> on {len(hold.y_true):,} bars; sign strategy "
