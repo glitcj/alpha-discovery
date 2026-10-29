@@ -1,0 +1,33 @@
+{
+  "exp_name": "v001_lgbm_walkforward",
+  "ticker": "USDJPY=X",
+  "seed": 0,
+  "cv": "TimeSeriesSplit(gap=24, max_train_size=None, n_splits=5, test_size=None)",
+  "cost_bps": 0.5,
+  "n_bars": 17137,
+  "bars_start": "2024-01-15 00:00:00+00:00",
+  "bars_end": "2026-10-28 22:00:00+00:00",
+  "n_dev": 14270,
+  "dev_start": "2024-01-22 02:00:00+00:00",
+  "dev_end": "2026-05-29 17:00:00+00:00",
+  "n_holdout": 2518,
+  "holdout_start": "2026-05-29 18:00:00+00:00",
+  "holdout_end": "2026-10-28 21:00:00+00:00",
+  "dev_up_share": 0.5121934127540294,
+  "holdout_up_share": 0.5218427323272439,
+  "started_at": "2026-10-29T00:32:01+00:00",
+  "versions": {
+    "usdjpy": "0.1.0",
+    "sklearn": "1.9.1",
+    "lightgbm": "4.7.0",
+    "pandas": "3.1.0",
+    "python": "3.12.14"
+  },
+  "candidates": [
+    "majority",
+    "momentum",
+    "logreg",
+    "lgbm"
+  ],
+  "wall_time_s": 16.5
+}

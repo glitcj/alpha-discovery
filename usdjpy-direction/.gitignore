@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/
+.pytest_cache/
+dataset/*
+!dataset/.gitkeep
+outputs/*
+!outputs/metrics.json
+!outputs/experiments.json
+!outputs/best_model.json
+!outputs/figures/
+!outputs/run_meta.json
+REPORT.html
