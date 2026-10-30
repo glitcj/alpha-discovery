@@ -42,6 +42,8 @@ from sklearn.metrics import (RocCurveDisplay, accuracy_score, balanced_accuracy_
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 
+from . import style
+
 BARS_PER_YEAR = 24 * 5 * 52        # FX trades ~24h x 5 days
 PRIMARY_METRIC = "auc"
 DEFAULT_COST_BPS = 0.5
@@ -566,16 +568,29 @@ def style_table(df: pd.DataFrame, digits: int = 4, caption: str | None = None, h
     """Notebook Styler: numeric formatting, green best per known metric column."""
     num = df.select_dtypes("number").columns
     sty = df.style.format({c: f"{{:.{digits}f}}" for c in num})
+    sty = sty.set_table_styles([
+        {"selector": "", "props": [("font-family", 'system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif'),
+                                   ("font-size", "0.85em"), ("border-collapse", "collapse")]},
+        {"selector": "caption", "props": [("caption-side", "top"), ("text-align", "left"), ("color", style.INK["muted"]),
+                                          ("font-style", "italic"), ("padding", "0 0 0.3em 0")]},
+        {"selector": "th", "props": [("background", style.INK["page"]), ("color", style.INK["secondary"]),
+                                     ("font-weight", "600"), ("text-align", "right"), ("padding", "0.3em 0.6em"),
+                                     ("border-bottom", f"1px solid {style.INK['axis']}")]},
+        {"selector": "th.row_heading", "props": [("text-align", "left")]},
+        {"selector": "td", "props": [("padding", "0.25em 0.6em"), ("text-align", "right"),
+                                     ("border-bottom", f"1px solid {style.INK['grid']}"),
+                                     ("font-variant-numeric", "tabular-nums"), ("color", style.INK["primary"])]},
+    ])
     if highlight_best and len(df) > 1:
         for c in num:
             gib = METRICS.get(c)
             if gib is None:
                 continue
-            sty = (sty.highlight_max if gib else sty.highlight_min)(subset=[c], color="#c9ecd4")
+            sty = (sty.highlight_max if gib else sty.highlight_min)(subset=[c], color="#dbeedd")
     if "auc" in df:
-        sty = sty.bar(subset=["auc"], color="#9ec5fe", vmin=0.45, vmax=0.6)
+        sty = sty.bar(subset=["auc"], color="#b7d3f6", vmin=0.45, vmax=0.6)
     if "spearman" in df:
-        sty = sty.bar(subset=["spearman"], color="#9ec5fe", align="zero", vmin=-0.1, vmax=0.1)
+        sty = sty.bar(subset=["spearman"], color=["#f4b5b5", "#b7d3f6"], align="zero", vmin=-0.1, vmax=0.1)
     if caption:
         sty = sty.set_caption(caption)
     return sty
@@ -623,12 +638,14 @@ class EquityCurveDisplay:
         import matplotlib.pyplot as plt
 
         ax = ax or plt.gca()
-        ax.plot(self.index, self.strategy * 1e2, label=f"{self.name or 'model'} ({self.cost_bps}bp cost)", lw=1.2)
-        ax.plot(self.index, self.buy_hold * 1e2, label="buy & hold", lw=1, color="#888888", alpha=0.8)
-        ax.axhline(0, color="black", lw=0.5)
+        colour = style.color_for(self.name or "model")
+        ax.plot(self.index, self.strategy * 1e2, label=f"{self.name or 'model'} ({self.cost_bps}bp cost)",
+                color=colour)
+        ax.plot(self.index, self.buy_hold * 1e2, label="buy & hold", lw=1.2, color=style.BENCHMARK)
+        style.zero_line(ax)
         ax.set_ylabel("cumulative log return (%)")
-        ax.legend(fontsize=8)
-        ax.tick_params(axis="x", labelrotation=30, labelsize=7)
+        ax.legend(loc="upper left")
+        style.date_axis(ax)
         self.ax_, self.figure_ = ax, ax.figure
         return self
 
@@ -649,13 +666,12 @@ class ConfidenceDisplay:
         ax = ax or plt.gca()
         t = self.table
         col = "accuracy" if "accuracy" in t else "hit_rate"
-        ax.bar(range(len(t)), t[col], color="#2f5597")
-        for i, (acc, n) in enumerate(zip(t[col], t["n"])):
-            ax.text(i, acc + 0.003, f"n={n}", ha="center", fontsize=7)
-        ax.axhline(0.5, color="black", lw=0.6, ls="--")
-        ax.set_xticks(range(len(t)), [str(x).split(" ")[0] for x in t.index])
         lo = min(0.45, float(t[col].min()) - 0.01)
-        ax.set_ylim(lo, max(0.56, float(t[col].max()) + 0.02))
+        hi = max(0.56, float(t[col].max()) + 0.02)
+        ax.set_ylim(lo, hi)
+        short = t[col].rename(index=lambda x: str(x).split(" ")[0])
+        style.vbar(ax, short, colors=style.sign_colors(t[col] - 0.5), labels=[f"n={n}" for n in t["n"]])
+        style.zero_line(ax, 0.5)
         ax.set_xlabel("|P(up) - 0.5|" if col == "accuracy" else "|predicted return| quartile")
         ax.set_ylabel("hit rate")
         self.ax_, self.figure_ = ax, ax.figure
@@ -676,8 +692,12 @@ class FeatureImportanceDisplay:
         import matplotlib.pyplot as plt
 
         ax = ax or plt.gca()
-        s = self.importances.iloc[::-1]
-        ax.barh(s.index, s.to_numpy(), color="#2f5597")
+        from .data import ASSET_GROUP
+        from .features import asset_of
+
+        groups = [ASSET_GROUP.get(asset_of(c), "target") for c in self.importances.index]
+        style.hbar(ax, self.importances, colors=[style.GROUP_COLORS.get(g, style.BENCHMARK) for g in groups],
+                   fmt="{:.1%}")
         ax.set_xlabel("gain (share)")
         ax.tick_params(axis="y", labelsize=7)
         self.ax_, self.figure_ = ax, ax.figure
@@ -717,8 +737,12 @@ class DecileDisplay:
 
         ax = ax or plt.gca()
         t = self.table
-        ax.bar(t.index + 1, t["real_bp"], color=np.where(t["real_bp"] >= 0, "#2f5597", "#b35c00"))
-        ax.axhline(0, color="black", lw=0.6)
+        s = t["real_bp"].rename(index=lambda i: str(int(i) + 1))
+        style.vbar(ax, s, colors=style.sign_colors(t["real_bp"]), fmt="{:.1f}")
+        ax.plot(np.arange(len(t)), t["pred_bp"], color=style.INK["secondary"], lw=1, ls=":", marker="o",
+                ms=3, label="mean predicted (bp)")
+        style.zero_line(ax)
+        ax.legend(loc="upper left")
         ax.set_xlabel("predicted-return decile (1 = most bearish)")
         ax.set_ylabel("mean realised fwd return (bp)")
         self.ax_, self.figure_ = ax, ax.figure
@@ -742,10 +766,14 @@ class RollingCorrelationDisplay:
         import matplotlib.pyplot as plt
 
         ax = ax or plt.gca()
-        ax.plot(self.series.index, self.series.to_numpy(), lw=1, color="#2f5597")
-        ax.axhline(0, color="black", lw=0.6)
+        s = self.series
+        colour = style.color_for(self.name or "model")
+        ax.fill_between(s.index, 0, s.to_numpy(), where=s.to_numpy() >= 0, color=style.POS, alpha=0.18, lw=0)
+        ax.fill_between(s.index, 0, s.to_numpy(), where=s.to_numpy() < 0, color=style.NEG, alpha=0.18, lw=0)
+        ax.plot(s.index, s.to_numpy(), lw=1.1, color=colour)
+        style.zero_line(ax)
         ax.set_ylabel("rolling rank correlation")
-        ax.tick_params(axis="x", labelrotation=30, labelsize=7)
+        style.date_axis(ax)
         self.ax_, self.figure_ = ax, ax.figure
         return self
 
@@ -754,37 +782,36 @@ def plot_report(report: EvaluationReport):
     """2x2 panel. Direction: ROC, calibration, hit rate by confidence, equity curve.
     Return: realised return by predicted decile, rolling 21-day rank correlation, hit rate by
     |prediction| quartile, daily non-overlapping equity curve."""
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7.5))
-    if report.task == "return":
+    with style.plot_style():
+        span = f"{report.index[0]:%Y-%m-%d} → {report.index[-1]:%Y-%m-%d}, n = {len(report.y_true):,}"
+        fig, axes = style.new_figure(2, 2, title=f"{report.name} — {report.method}", height=7.8,
+                                     subtitle=f"out-of-sample rows {span}")
         o = report.overall
-        DecileDisplay.from_predictions(report.y_true, report.y_pred, name=report.name, ax=axes[0, 0])
-        axes[0, 0].set_title(f"realised vs predicted (Spearman {o['spearman']:+.4f})")
-        RollingCorrelationDisplay.from_report(report, ax=axes[0, 1])
-        axes[0, 1].set_title("rolling 21-day Spearman (hourly rows)")
+        if report.task == "return":
+            DecileDisplay.from_predictions(report.y_true, report.y_pred, name=report.name, ax=axes[0, 0])
+            axes[0, 0].set_title(f"Realised return by predicted decile (Spearman {o['spearman']:+.4f})")
+            RollingCorrelationDisplay.from_report(report, ax=axes[0, 1])
+            axes[0, 1].set_title("Rolling 21-day Spearman (hourly rows)")
+            ConfidenceDisplay.from_report(report, ax=axes[1, 0])
+            axes[1, 0].set_title(f"Sign hit rate by |prediction| (overall {o['hit_rate']:.3f})")
+            EquityCurveDisplay.from_report(report, ax=axes[1, 1])
+            axes[1, 1].set_title(f"Daily sign trade: {o['strategy_bps']:+.2f} bp/day, Sharpe {o['sharpe']:.2f}")
+            return style.finish(fig)
+        roc = RocCurveDisplay.from_predictions(report.y_true, report.p_up, ax=axes[0, 0], name=report.name,
+                                               plot_chance_level=True,
+                                               chance_level_kw={"color": style.BENCHMARK, "ls": "-", "lw": 1})
+        roc.line_.set_color(style.color_for(report.name))
+        axes[0, 0].set_title(f"ROC (AUC {report.auc:.4f})")
+        cal = CalibrationDisplay.from_predictions(report.y_true, report.p_up, n_bins=10, strategy="quantile",
+                                                  ax=axes[0, 1], name=report.name, ref_line=True)
+        cal.line_.set_color(style.color_for(report.name))
+        axes[0, 1].set_title("Calibration (quantile bins)")
         ConfidenceDisplay.from_report(report, ax=axes[1, 0])
-        axes[1, 0].set_title(f"sign hit rate by |prediction| (overall {o['hit_rate']:.3f})")
-        EquityCurveDisplay.from_report(report, ax=axes[1, 1])
-        axes[1, 1].set_title(f"daily sign trade: {o['strategy_bps']:+.2f} bp/day, Sharpe {o['sharpe']:.2f}")
-        fig.suptitle(f"{report.name} — {report.method}", fontsize=11)
-        fig.tight_layout()
-        return fig
-    RocCurveDisplay.from_predictions(report.y_true, report.p_up, ax=axes[0, 0], name=report.name,
-                                     plot_chance_level=True)
-    axes[0, 0].set_title(f"ROC (AUC {report.auc:.4f})")
-    CalibrationDisplay.from_predictions(report.y_true, report.p_up, n_bins=10, strategy="quantile",
-                                        ax=axes[0, 1], name=report.name)
-    axes[0, 1].set_title("calibration (quantile bins)")
-    ConfidenceDisplay.from_report(report, ax=axes[1, 0])
-    axes[1, 0].set_title("hit rate by confidence")
-    EquityCurveDisplay.from_predictions(report.p_up, report.next_logret, report.index, name=report.name,
-                                        cost_bps=report.cost_bps, ax=axes[1, 1])
-    axes[1, 1].set_title(f"sign strategy: {report.overall['strategy_bps']:+.3f} bp/bar, "
-                         f"Sharpe {report.overall['sharpe']:.2f}")
-    fig.suptitle(f"{report.name} — {report.method}", fontsize=11)
-    fig.tight_layout()
-    return fig
+        axes[1, 0].set_title("Hit rate by confidence")
+        EquityCurveDisplay.from_predictions(report.p_up, report.next_logret, report.index, name=report.name,
+                                            cost_bps=report.cost_bps, ax=axes[1, 1])
+        axes[1, 1].set_title(f"Sign strategy: {o['strategy_bps']:+.3f} bp/bar, Sharpe {o['sharpe']:.2f}")
+        return style.finish(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -829,8 +856,6 @@ def save_report(reports: dict[str, EvaluationReport], board: pd.DataFrame, outpu
 
         fig_dir = output_dir / "figures"
         fig_dir.mkdir(exist_ok=True)
-        for old in fig_dir.glob("*.png"):        # figures always describe the latest run only
-            old.unlink()
         for name, rep in {**reports, **({f"holdout_{holdout.name}": holdout} if holdout else {})}.items():
             fig = plot_report(rep)
             fig.savefig(fig_dir / f"{_slug(name)}.png", dpi=110, bbox_inches="tight")

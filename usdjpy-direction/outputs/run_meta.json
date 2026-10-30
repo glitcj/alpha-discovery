@@ -91,7 +91,7 @@
   "holdout_up_share": 0.5914608622854751,
   "dev_y_mean": 8.242248876205125e-05,
   "dev_y_std": 0.006300459979978644,
-  "started_at": "2026-10-29T13:25:05+00:00",
+  "started_at": "2026-10-29T18:06:26+00:00",
   "versions": {
     "usdjpy": "0.1.0",
     "sklearn": "1.9.1",
@@ -107,5 +107,5 @@
     "ridge",
     "lgbm_reg"
   ],
-  "wall_time_s": 214.6
+  "wall_time_s": 347.3
 }

@@ -40,7 +40,8 @@ Options: `EXP=<module>`, `MODELS=persistence,ridge,lgbm_reg` (empty = the arm's 
 | `usdjpy/models.py` | direction candidates (`majority`, `momentum`, `logreg`, `lgbm`), return regressors (`persistence`, `mean`, `best_feature`, `random`, `ridge`, `lgbm_reg`) |
 | `usdjpy/evaluation.py` | `DirectionEvaluator` / `ReturnEvaluator` (walk-forward `TimeSeriesSplit` + gap), ml-pipe's metric set + `rank_score`, slices (incl. market regime), displays |
 | `usdjpy/pipeline/classification.py` | `execute()`: the 10 phases, task-aware |
-| `usdjpy/analysis/` | builders, display helpers, pre/post-analysis reporters (asset / feature-type importance, generalization gap, residual diagnostics) |
+| `usdjpy/analysis/` | builders, display helpers (banner, numbered headers, captions, figure saving), pre/post-analysis reporters |
+| `usdjpy/style.py`, `usdjpy/regimes.py` | one palette + matplotlib chrome for every figure; the market-regime labels (joint trend × volatility grid, ml-pipe's trend / volatility deciles) shared by the regime slice and the regime figures |
 | `usdjpy/exp/` | the experiment arms (copy the latest to `v00N_*.py` to change one thing) |
 | `usdjpy/train.py`, `usdjpy/experiments.py` | CLI and experiment ladder |
 
@@ -58,6 +59,15 @@ Options: `EXP=<module>`, `MODELS=persistence,ridge,lgbm_reg` (empty = the arm's 
 | metrics | MSE, MAE, R², Pearson, Spearman, Kendall, F1, ROC AUC, MCC (+ weighted τ, Wasserstein, precision/recall, sign-strategy Sharpe); leaderboard = weighted rank score | the same set: Spearman (selection), Pearson, Kendall, weighted τ, R², MSE, MAE, Wasserstein, MCC, F1, precision, recall, ROC AUC, binary accuracy, ml-pipe's `sharpe_ratio`, plus our daily non-overlapping sign trade and ml-pipe's `rank_score` |
 | post-analysis | generalization gap (in- vs out-of-sample), rolling metrics, regime slices, residual report (ACF, trend, heteroskedasticity, normality) | the same: generalization gap on the 80/20 fit, rolling Spearman, trend × volatility regime slices, residual ACF / trend / rolling std / Jarque–Bera / ARCH-LM |
 
+## Report
+
+`make train` (and this notebook) render two numbered sections and save every figure to `outputs/figures/`:
+
+| section | what it shows | figures |
+|---|---|---|
+| Pre-analysis 1–7 | coverage, **market context** (close, volatility, drawdown, holdout span), target distribution + label ACF, return ACF, **regimes** (timeline of the joint trend × volatility grid, target by regime, ml-pipe's past / future trend and volatility deciles, hour × weekday seasonality), **cross-asset** (basket correlation, rolling correlation with USDJPY, feed freshness), feature–target correlation by asset group × feature type | `pre_*.png` |
+| Post-analysis 1–11 | run record, leaderboard with per-fold ranges, training curves + generalisation dumbbell, experiments, **performance over time** (rolling Spearman / hit rate / equity / prediction band against regimes and folds, year × month calendar), slices, **regime performance** (joint grid, ml-pipe decile violins, predicted vs realised), residuals (ACF, trend, heteroskedasticity, Q–Q, residual vs fitted, CUSUM), importance by asset / type, holdout timeline, verdict | `post_*.png`, `<model>.png`, `holdout_<model>.png` |
+
 **Leakage guards.**
 - Every feature is invariant to truncating or shocking the future (tested).
 - A random walk scores Spearman ≈ 0 through the evaluator.
@@ -70,6 +80,17 @@ The cells below re-run v003 and render the full report.
 `make experiments` evaluates a wider set of variants on v003's development rows and walk-forward folds
 (holdout excluded): the v002 model variants plus asset-group ablations. The table is read from
 `outputs/experiments.json`.
+
+## Headline figures
+
+The full set is in `outputs/figures/` (and inline above when the notebook has been executed).
+
+| | |
+|---|---|
+| ![market](outputs/figures/pre_market.png) | ![regimes](outputs/figures/pre_regimes_timeline.png) |
+| ![basket](outputs/figures/pre_crossasset_corr.png) | ![leaderboard](outputs/figures/post_leaderboard.png) |
+| ![timeline](outputs/figures/post_timeline.png) | ![regime performance](outputs/figures/post_regime_perf.png) |
+| ![calendar](outputs/figures/post_calendar.png) | ![holdout](outputs/figures/post_holdout_timeline.png) |
 
 ## Findings (data 2024-01-15 → 2026-10-29)
 

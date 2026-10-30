@@ -42,6 +42,7 @@ from sklearn.compose import TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
 
 from .. import __version__
+from ..analysis import display
 from ..analysis.builders import BaselineBuilder, MetricsBuilder
 from ..analysis.reporters import PostAnalysisReporter, PreAnalysisReporter
 from ..data import OHLC, align_basket, make_target, split_holdout, write_predictions
@@ -237,11 +238,19 @@ def execute(
     _log(exp_name, f"Step2: {meta['n_bars']:,} bars -> {meta['n_dev']:,} dev rows + "
                    f"{meta['n_holdout']:,} holdout rows (from {meta['holdout_start']})")
 
-    # Step3: Pre-analysis (development rows only)
+    # figures always describe the latest run only: clear once, then reporters and save_report add to the folder
+    fig_dir = output_dir / "figures"
+    if figures:
+        fig_dir.mkdir(exist_ok=True)
+        for old in fig_dir.glob("*.png"):
+            old.unlink()
+    display.FIGURE_DIR = fig_dir if figures else None
+
+    # Step3: Pre-analysis (development rows only; the market chart also shows the holdout span)
     if display_preanalysis and preanalysis_reporter is not None:
         dev_bars = data.bars[data.bars.index <= data.X.index[-1]]
         preanalysis_reporter.display(exp_name=exp_name, bars=dev_bars, X=data.X, y=data.y, ret=data.ret,
-                                     task=task)
+                                     task=task, all_bars=data.bars, holdout_start=data.X_hold.index[0])
 
     # Step4: Baselines + candidates
     all_candidates = {**baseline_builder.build(), **candidates}
@@ -329,6 +338,9 @@ def execute(
                              predictions=preds, paths=paths, meta=meta)
 
     # Step10: Post-analysis
-    if display_postanalysis:
-        postanalysis_reporter.display(result)
+    try:
+        if display_postanalysis:
+            postanalysis_reporter.display(result)
+    finally:
+        display.FIGURE_DIR = None
     return result

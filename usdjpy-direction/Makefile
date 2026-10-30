@@ -54,8 +54,9 @@ lint: ## byte-compile the package and tests
 evaluate: ## walk-forward CV of the experiment's candidates, print the leaderboard (no refit/holdout)
 	$(RUN) python -m usdjpy.train --exp $(EXP) $(if $(MODELS),--models $(MODELS),) --cv $(CV) --seed $(SEED) --cost-bps $(COST) --evaluate-only
 
-train: ## run experiment EXP end-to-end: CV, pick best, refit, score the holdout, write outputs/predictions.csv
-	$(RUN) python -m usdjpy.train --exp $(EXP) $(if $(MODELS),--models $(MODELS),) --cv $(CV) --seed $(SEED) --cost-bps $(COST)
+train: ## run experiment EXP end-to-end: CV, pick best, refit, score the holdout, write outputs/ (figures + predictions.csv)
+	$(RUN) python -m usdjpy.train --exp $(EXP) $(if $(MODELS),--models $(MODELS),) --cv $(CV) --seed $(SEED) --cost-bps $(COST) \
+		--preanalysis --postanalysis
 
 predict: ## forecast from the latest cached bar with the saved model (run `make fetch` first)
 	$(RUN) python -m usdjpy.train --predict-only
