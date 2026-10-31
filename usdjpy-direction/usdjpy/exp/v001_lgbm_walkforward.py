@@ -50,6 +50,15 @@ from ..pipeline.classification import OUTPUTS
 
 # experiment name = file name (never hand-written); it labels the run record and the report
 EXP_NAME = Path(__file__).stem
+
+# DNA: how this arm descends from earlier arms. Read by usdjpy.lineage; keep it truthful, keep it short.
+DNA = {
+    "parents": [],                                 # the root arm
+    "goal": "next-hour direction baseline: LightGBM vs majority / momentum / logreg under walk-forward AUC",
+    "changes": [],
+    "pipeline_commit": "5a31c9d",                  # pipeline sha this arm was authored/run against
+    "note": "pre-lineage run 2026-10-29: lgbm CV AUC 0.519, holdout 0.558; edge mostly time-of-day",
+}
 BASELINES = ("majority", "momentum", "logreg")
 CANDIDATES = ("lgbm",)
 GAP = 24

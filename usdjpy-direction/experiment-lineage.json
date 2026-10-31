@@ -1,0 +1,189 @@
+{
+  "schema": 1,
+  "project": "usdjpy-direction",
+  "metric": "mcc",
+  "updated_at": "2026-10-30T21:49:29+00:00",
+  "nodes": {
+    "v001_lgbm_walkforward": {
+      "file": "usdjpy/exp/v001_lgbm_walkforward.py",
+      "task": "direction",
+      "primary_metric": "auc",
+      "parents": [],
+      "goal": "next-hour direction baseline: LightGBM vs majority / momentum / logreg under walk-forward AUC",
+      "changes": [],
+      "pipeline_commit": "5a31c9d",
+      "note": "pre-lineage run 2026-10-29: lgbm CV AUC 0.519, holdout 0.558; edge mostly time-of-day",
+      "runs": []
+    },
+    "v002_fwd_logret_1d": {
+      "file": "usdjpy/exp/v002_fwd_logret_1d.py",
+      "task": "return",
+      "primary_metric": "spearman",
+      "parents": [
+        "v001_lgbm_walkforward"
+      ],
+      "goal": "match ml-pipe's 1-day FWDLogReturn objective on USDJPY-only inputs",
+      "changes": [
+        {
+          "from": "v001_lgbm_walkforward",
+          "what": "target = 1-day forward log return log(close[t+25] / close[t+1]), regression selected by Spearman",
+          "why": "ml-pipe v001_logreturn_exp_v19_legacy_test predicts FWDLogReturn(48, 1) on 30-min bars"
+        },
+        {
+          "from": "v001_lgbm_walkforward",
+          "what": "ml-pipe's 18 tsf feature types x 7 windows x shifts {0, 23} on the FX-week grid",
+          "why": "same feature family as ml-pipe so results are comparable"
+        },
+        {
+          "from": "v001_lgbm_walkforward",
+          "what": "16-calendar-day CV gap (274 bars) and a holdout purged by 25 bars",
+          "why": "ml-pipe's skip_days_between_train_test; overlapping labels must not leak"
+        }
+      ],
+      "pipeline_commit": "fdfc5ff",
+      "note": "pre-lineage run 2026-10-29: every model within +-0.05 Spearman, the random baseline wins",
+      "runs": []
+    },
+    "v003_cross_asset": {
+      "file": "usdjpy/exp/v003_cross_asset.py",
+      "task": "return",
+      "primary_metric": "spearman",
+      "parents": [
+        "v002_fwd_logret_1d"
+      ],
+      "goal": "cross-asset inputs",
+      "changes": [
+        {
+          "from": "v002_fwd_logret_1d",
+          "what": "30-asset yfinance basket as-of joined onto the FX-week grid, the same 18 tsf types per asset plus <asset>__stale hours; LightGBM samples 30% of the ~7k columns per tree",
+          "why": "the largest gap vs ml-pipe, whose features span a selected multi-asset universe"
+        }
+      ],
+      "pipeline_commit": "9572607",
+      "note": null,
+      "runs": [
+        {
+          "at": "2026-10-29T18:06:26+00:00",
+          "git_commit": null,
+          "git_dirty": null,
+          "seed": 0,
+          "cv": null,
+          "cost_bps": 0.5,
+          "models": [
+            "persistence",
+            "mean",
+            "best_feature",
+            "random",
+            "ridge",
+            "lgbm_reg"
+          ],
+          "best": "lgbm_reg",
+          "task": "return",
+          "primary_metric": "spearman",
+          "cv_metrics": {
+            "spearman": 0.05994787407419744,
+            "pearson": 0.057218984553680165,
+            "r2": -0.20248044407327281,
+            "mcc": 0.05698170684690056,
+            "f1": 0.4905272981801213,
+            "roc_auc": 0.529198502196576,
+            "auc": 0.529198502196576,
+            "bin_acc": 0.5151865008880995,
+            "strategy_bps": 5.046876970578291,
+            "sharpe": 1.3348146095996158,
+            "rank_score": 34.5
+          },
+          "holdout": {
+            "spearman": 0.06653830853810741,
+            "pearson": 0.022400560159415987,
+            "r2": -0.07274092522849762,
+            "mcc": 0.025371979651502067,
+            "f1": 0.5252201761409128,
+            "roc_auc": 0.5313840461648821,
+            "auc": 0.5313840461648821,
+            "bin_acc": 0.5035579740477187,
+            "strategy_bps": 3.2138809991574964,
+            "sharpe": 0.995677163791956
+          },
+          "variants": {
+            "lgbm_reg (rolling ~1.5y window)": {
+              "spearman": 0.06131374749092792,
+              "pearson": 0.05872955265262414,
+              "r2": -0.20307497930990603,
+              "mcc": 0.06156445809119582,
+              "f1": 0.5010134512622075,
+              "roc_auc": 0.5317370712936225,
+              "auc": 0.5317370712936225,
+              "bin_acc": 0.5190053285968028,
+              "strategy_bps": 3.742882982766202,
+              "sharpe": 0.9881462748866283,
+              "rank_score": 36.5
+            },
+            "lgbm_reg (FX assets only)": {
+              "spearman": 0.040135912010456604,
+              "pearson": 0.02706216517046134,
+              "r2": -0.26390069153760365,
+              "mcc": 0.03436729071505353,
+              "f1": 0.5537878163383069,
+              "roc_auc": 0.5246971150175637,
+              "auc": 0.5246971150175637,
+              "bin_acc": 0.519271758436945,
+              "strategy_bps": 2.725111316350142,
+              "sharpe": 0.7184038894529853,
+              "rank_score": 28.5
+            },
+            "lgbm_reg (non-FX assets only)": {
+              "spearman": 0.01898965398331903,
+              "pearson": 0.030600553391991067,
+              "r2": -0.29363838885033,
+              "mcc": 0.00981266088587937,
+              "f1": 0.4430049308711206,
+              "roc_auc": 0.5144622059806908,
+              "auc": 0.5144622059806908,
+              "bin_acc": 0.4883658969804618,
+              "strategy_bps": 4.478864818018079,
+              "sharpe": 1.183973272456587,
+              "rank_score": 24.25
+            },
+            "lgbm_reg (USDJPY only = v002)": {
+              "spearman": -0.01561764035776965,
+              "pearson": -0.027919896556442537,
+              "r2": -0.718187977323169,
+              "mcc": -0.01733009189380386,
+              "f1": 0.4504167056840528,
+              "roc_auc": 0.4939438356020235,
+              "auc": 0.4939438356020235,
+              "bin_acc": 0.47877442273534637,
+              "strategy_bps": -0.7056921476425082,
+              "sharpe": -0.18585843660073836,
+              "rank_score": 15.75
+            }
+          },
+          "n_dev": 13512,
+          "n_features": 7293,
+          "wall_time_s": 347.3,
+          "versions": {
+            "usdjpy": "0.1.0",
+            "sklearn": "1.9.1",
+            "lightgbm": "4.7.0",
+            "pandas": "3.1.0",
+            "python": "3.12.14"
+          },
+          "imported_from": "outputs"
+        }
+      ]
+    }
+  },
+  "edges": [
+    {
+      "from": "v001_lgbm_walkforward",
+      "to": "v002_fwd_logret_1d",
+      "kind": "primary"
+    },
+    {
+      "from": "v002_fwd_logret_1d",
+      "to": "v003_cross_asset",
+      "kind": "primary"
+    }
+  ]
+}

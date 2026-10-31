@@ -57,6 +57,25 @@ from ..pipeline.classification import OUTPUTS
 
 # experiment name = file name (never hand-written); it labels the run record and the report
 EXP_NAME = Path(__file__).stem
+
+# DNA: how this arm descends from earlier arms. Read by usdjpy.lineage; keep it truthful, keep it short.
+DNA = {
+    "parents": ["v001_lgbm_walkforward"],          # first entry = primary parent (tree edge)
+    "goal": "match ml-pipe's 1-day FWDLogReturn objective on USDJPY-only inputs",
+    "changes": [
+        {"from": "v001_lgbm_walkforward",
+         "what": "target = 1-day forward log return log(close[t+25] / close[t+1]), regression selected by Spearman",
+         "why": "ml-pipe v001_logreturn_exp_v19_legacy_test predicts FWDLogReturn(48, 1) on 30-min bars"},
+        {"from": "v001_lgbm_walkforward",
+         "what": "ml-pipe's 18 tsf feature types x 7 windows x shifts {0, 23} on the FX-week grid",
+         "why": "same feature family as ml-pipe so results are comparable"},
+        {"from": "v001_lgbm_walkforward",
+         "what": "16-calendar-day CV gap (274 bars) and a holdout purged by 25 bars",
+         "why": "ml-pipe's skip_days_between_train_test; overlapping labels must not leak"},
+    ],
+    "pipeline_commit": "fdfc5ff",                  # pipeline sha this arm was authored/run against
+    "note": "pre-lineage run 2026-10-29: every model within +-0.05 Spearman, the random baseline wins",
+}
 TASK = "return"
 BASELINES = ("persistence", "mean", "best_feature", "random", "ridge")
 CANDIDATES = ("lgbm_reg",)

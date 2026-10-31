@@ -22,6 +22,7 @@ from pathlib import Path
 
 import joblib
 
+from . import lineage
 from .data import BAR, align_basket, cache_path, load_bars, load_basket
 from .evaluation import DEFAULT_COST_BPS, md_table
 from .pipeline.classification import OUTPUTS
@@ -51,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--postanalysis", action="store_true", help="print the post-analysis section (text)")
     p.add_argument("--no-experiments", action="store_true", help="skip the feature/window/gap variants")
     p.add_argument("--no-diagnostics", action="store_true", help="skip the 80/20 fit + LightGBM curves")
+    p.add_argument("--no-lineage", action="store_true",
+                   help="do not record this run in experiment-lineage.json (smoke runs and custom --output-dir never are)")
     return p
 
 
@@ -137,6 +140,10 @@ def main(argv=None) -> int:
     print("\nartefacts:")
     for k, v in result.paths.items():
         print(f"  {k}: {v}")
+    if not args.no_lineage and args.n_rows is None and output_dir.resolve() == OUTPUTS.resolve():
+        run = lineage.record_run(result, vars(args))
+        shown = ", ".join(f"{m} {run['cv_metrics'][m]:.4f}" for m in (lineage.DEFAULT_METRIC, pm) if m in run["cv_metrics"])
+        print(f"\nlineage: recorded {args.exp} run ({shown}) -> {lineage.LINEAGE_PATH}")
     return 0
 
 

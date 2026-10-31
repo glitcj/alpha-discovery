@@ -25,6 +25,7 @@ make train          # v003 end-to-end -> outputs/ (leaderboard, holdout score, p
 make train EXP=v002_fwd_logret_1d      # USDJPY-only features;  EXP=v001_lgbm_walkforward: next-hour direction
 make predict        # forecast from the latest cached bar with the saved model
 make experiments    # experiment ladder (TASK=return|direction; return = v003 data) -> outputs/experiments.json
+make lineage        # sync experiment-lineage.json, render outputs/figures/lineage.png, print the best-MCC path (METRIC=mcc)
 make run-report     # re-execute this notebook; `make report` exports REPORT.html; `make readme` refreshes README.md
 ```
 
@@ -42,8 +43,9 @@ Options: `EXP=<module>`, `MODELS=persistence,ridge,lgbm_reg` (empty = the arm's 
 | `usdjpy/pipeline/classification.py` | `execute()`: the 10 phases, task-aware |
 | `usdjpy/analysis/` | builders, display helpers (banner, numbered headers, captions, figure saving), pre/post-analysis reporters |
 | `usdjpy/style.py`, `usdjpy/regimes.py` | one palette + matplotlib chrome for every figure; the market-regime labels (joint trend × volatility grid, ml-pipe's trend / volatility deciles) shared by the regime slice and the regime figures |
-| `usdjpy/exp/` | the experiment arms (copy the latest to `v00N_*.py` to change one thing) |
+| `usdjpy/exp/` | the experiment arms (copy the latest to `v00N_*.py` to change one thing; each carries a `DNA` dict) |
 | `usdjpy/train.py`, `usdjpy/experiments.py` | CLI and experiment ladder |
+| `usdjpy/lineage.py`, `experiment-lineage.json` | experiment DNA validation, run records per arm, the lineage tree (`make lineage`) |
 
 ## Method (v003, aligned with ml-pipe)
 
@@ -80,6 +82,28 @@ The cells below re-run v003 and render the full report.
 `make experiments` evaluates a wider set of variants on v003's development rows and walk-forward folds
 (holdout excluded): the v002 model variants plus asset-group ablations. The table is read from
 `outputs/experiments.json`.
+
+## Experiment lineage
+
+Every arm in `usdjpy/exp/` carries a `DNA` dict (parents, goal, the stack of changes, the pipeline commit it was
+authored against). `make train` records each full run under its arm in `experiment-lineage.json` (CV + holdout
+metrics, git commit, seed); `make lineage` syncs the arms, renders `outputs/figures/lineage.png` and prints the
+best-MCC path. The pipeline is still moving, so commit shas are informative, not exact.
+
+```mermaid
+graph TD
+    v001_lgbm_walkforward["v001_lgbm_walkforward<br/>(not run)"]
+    v002_fwd_logret_1d["v002_fwd_logret_1d<br/>(not run)"]
+    v003_cross_asset["v003_cross_asset<br/>mcc 0.057 · spearman 0.060"]
+    v001_lgbm_walkforward --> v002_fwd_logret_1d
+    v002_fwd_logret_1d --> v003_cross_asset
+    classDef best fill:#9ec5f4,stroke:#0ca30c,stroke-width:2px
+    class v001_lgbm_walkforward,v002_fwd_logret_1d,v003_cross_asset best
+```
+
+![lineage](outputs/figures/lineage.png)
+
+v001 and v002 predate the lineage file; their results live in the `note` of their DNA (and in the findings below).
 
 ## Headline figures
 

@@ -21,7 +21,10 @@ selection inside the pipeline.
 How to add v004
 ---------------
 Copy this file to ``v004_<slug>.py``, change exactly one thing and prepend a paragraph
-"v004 on top of v003: <change>, <why>; everything else unchanged". Run it with ``make train EXP=v004_<slug>``.
+"v004 on top of v003: <change>, <why>; everything else unchanged". Fill the ``DNA`` block below:
+``parents=["v003_cross_asset"]``, a one-line ``goal``, one ``changes`` entry per change (``from`` / ``what`` /
+``why``) and ``pipeline_commit`` = ``git rev-parse --short HEAD`` at authoring time. ``make train EXP=v004_<slug>``
+records the run in ``experiment-lineage.json``; ``make lineage`` re-renders the tree (``outputs/figures/lineage.png``).
 """
 
 from __future__ import annotations
@@ -39,6 +42,20 @@ from ..pipeline.classification import OUTPUTS
 
 # experiment name = file name (never hand-written); it labels the run record and the report
 EXP_NAME = Path(__file__).stem
+
+# DNA: how this arm descends from earlier arms. Read by usdjpy.lineage; keep it truthful, keep it short.
+DNA = {
+    "parents": ["v002_fwd_logret_1d"],             # first entry = primary parent (tree edge)
+    "goal": "cross-asset inputs",
+    "changes": [
+        {"from": "v002_fwd_logret_1d",
+         "what": "30-asset yfinance basket as-of joined onto the FX-week grid, the same 18 tsf types per asset "
+                 "plus <asset>__stale hours; LightGBM samples 30% of the ~7k columns per tree",
+         "why": "the largest gap vs ml-pipe, whose features span a selected multi-asset universe"},
+    ],
+    "pipeline_commit": "9572607",                  # pipeline sha this arm was authored/run against
+    "note": None,
+}
 TASK = "return"
 BASELINES = ("persistence", "mean", "best_feature", "random", "ridge")
 CANDIDATES = ("lgbm_reg",)
