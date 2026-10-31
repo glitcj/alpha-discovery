@@ -1,8 +1,8 @@
 {
-  "exp_name": "v003_cross_asset",
+  "exp_name": "v004_feature_selection",
   "task": "return",
   "best": "lgbm_reg",
-  "cv_spearman": 0.05994787407419744,
+  "cv_spearman": 0.07931454980891765,
   "params": {
     "check_inverse": "False",
     "func": "None",
@@ -29,11 +29,11 @@
     "regressor__verbose": "-1",
     "regressor": "LGBMRegressor(colsample_bytree=0.3, learning_rate=0.02, min_child_samples=200,\n              n_estimators=400, num_leaves=15, random_state=0, reg_lambda=1.0,\n              subsample=0.8, subsample_freq=1, verbose=-1)",
     "transformer__memory": "None",
-    "transformer__steps": "[('scale', RobustScaler()), ('clip', FunctionTransformer(check_inverse=False, func=<function _clip5 at 0x10f34e3e0>))]",
+    "transformer__steps": "[('scale', RobustScaler()), ('clip', FunctionTransformer(check_inverse=False,\n                    func=<function _clip5 at 0xffff260ec220>))]",
     "transformer__transform_input": "None",
     "transformer__verbose": "False",
     "transformer__scale": "RobustScaler()",
-    "transformer__clip": "FunctionTransformer(check_inverse=False, func=<function _clip5 at 0x10f34e3e0>)",
+    "transformer__clip": "FunctionTransformer(check_inverse=False,\n                    func=<function _clip5 at 0xffff260ec220>)",
     "transformer__scale__copy": "True",
     "transformer__scale__quantile_range": "(25.0, 75.0)",
     "transformer__scale__unit_variance": "False",
@@ -42,11 +42,11 @@
     "transformer__clip__accept_sparse": "False",
     "transformer__clip__check_inverse": "False",
     "transformer__clip__feature_names_out": "None",
-    "transformer__clip__func": "<function _clip5 at 0x10f34e3e0>",
+    "transformer__clip__func": "<function _clip5 at 0xffff260ec220>",
     "transformer__clip__inv_kw_args": "None",
     "transformer__clip__inverse_func": "None",
     "transformer__clip__kw_args": "None",
     "transformer__clip__validate": "False",
-    "transformer": "Pipeline(steps=[('scale', RobustScaler()),\n                ('clip',\n                 FunctionTransformer(check_inverse=False,\n                                     func=<function _clip5 at 0x10f34e3e0>))])"
+    "transformer": "Pipeline(steps=[('scale', RobustScaler()),\n                ('clip',\n                 FunctionTransformer(check_inverse=False,\n                                     func=<function _clip5 at 0xffff260ec220>))])"
   }
 }

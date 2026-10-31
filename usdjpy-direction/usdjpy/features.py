@@ -470,3 +470,132 @@ def make_feature_frame(bars: pd.DataFrame, cleaner: BarCleaner | None = None) ->
     """bars -> cleaned -> features (convenience for notebooks and ``--predict-only``)."""
     cleaned = (cleaner or BarCleaner()).fit_transform(bars)
     return BarFeatureEngineer().fit_transform(cleaned)
+
+
+# ---------------------------------------------------------------------------
+# v004: stability-ranked feature selection (ml-pipe's FeatureSelector / MulticollinearityFilter, simplified)
+# ---------------------------------------------------------------------------
+class StabilityFeatureSelector(TransformerMixin, BaseEstimator):
+    """Keep the ``n_features`` columns whose Spearman correlation with ``y`` is *stable* over time.
+
+    Fit on the training rows only (it sees ``y``, so it lives inside the model pipeline and is refit per
+    fold). The rows are cut into chronological blocks of ``block`` bars (ml-pipe's
+    ``corr_stability_window``, 63 days = 1512 hourly bars); each feature's Spearman correlation with ``y``
+    is computed inside every block and the feature's score is the weighted mean of those signed
+    correlations, recent blocks weighing more (``half_life`` in blocks; ml-pipe's ``ewma_alpha``). A
+    feature that flips sign between blocks cancels itself out, so ranking by ``|score|`` prefers
+    consistent relationships over strong-but-episodic ones.
+
+    Optional group caps (ml-pipe's asset / feature-type pre-selection): keep only the ``n_assets`` assets
+    and ``n_types`` feature types with the highest mean ``|score|`` before the final cut. Then a greedy
+    multicollinearity filter drops any candidate whose ``|Spearman|`` with an already-kept, higher-ranked
+    column exceeds ``corr_threshold`` (ml-pipe's ``MulticollinearityFilter(threshold=0.8)``), among the
+    top ``candidate_factor * n_features`` columns.
+
+    Attributes after ``fit``: ``scores_`` (signed stability score per column), ``block_corr_`` (blocks x
+    columns), ``selected_`` (kept columns in rank order), ``dropped_collinear_``.
+    """
+
+    def __init__(self, n_features: int = 200, block: int = 1512, half_life: float = 2.0, min_block: int = 200,
+                 n_assets: int | None = None, n_types: int | None = None, corr_threshold: float | None = 0.8,
+                 candidate_factor: int = 3, corr_rows: int = 3000, random_state: int = 0):
+        self.n_features = n_features
+        self.block = block
+        self.half_life = half_life
+        self.min_block = min_block
+        self.n_assets = n_assets
+        self.n_types = n_types
+        self.corr_threshold = corr_threshold
+        self.candidate_factor = candidate_factor
+        self.corr_rows = corr_rows
+        self.random_state = random_state
+
+    # -- helpers
+    @staticmethod
+    def _rank_corr(X: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """Spearman of every column with y, NaN-aware (pairwise complete), as a 1-D array."""
+        r = X.rank().to_numpy(dtype=np.float32)
+        ry = pd.Series(y).rank().to_numpy(dtype=np.float32)[:, None]
+        mask = ~np.isnan(r)
+        n = mask.sum(axis=0)
+        rx = np.where(mask, r, 0.0)
+        ryy = np.where(mask, ry, 0.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mx, my = rx.sum(0) / n, ryy.sum(0) / n
+            cov = ((rx - mx) * mask * (ryy - my)).sum(0)
+            sx = np.sqrt((((rx - mx) * mask) ** 2).sum(0))
+            sy = np.sqrt((((ryy - my) * mask) ** 2).sum(0))
+            out = cov / (sx * sy)
+        out[n < 3] = np.nan
+        return out.astype(float)
+
+    def _blocks(self, n: int) -> list[slice]:
+        starts = list(range(0, n, self.block))
+        blocks = [slice(s, min(s + self.block, n)) for s in starts]
+        if len(blocks) > 1 and (blocks[-1].stop - blocks[-1].start) < self.min_block:
+            blocks[-2] = slice(blocks[-2].start, n)
+            blocks.pop()
+        return blocks
+
+    # -- sklearn API
+    def fit(self, X: pd.DataFrame, y=None):
+        if y is None:
+            raise ValueError("StabilityFeatureSelector needs y")
+        X = pd.DataFrame(X)
+        y = np.asarray(y, dtype=float).ravel()
+        blocks = self._blocks(len(X))
+        corr = np.vstack([self._rank_corr(X.iloc[b], y[b]) for b in blocks])        # blocks x columns
+        ages = np.arange(len(blocks))[::-1].astype(float)                            # 0 = most recent block
+        w = 0.5 ** (ages / self.half_life)
+        valid = ~np.isnan(corr)
+        wsum = (w[:, None] * valid).sum(0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            score = np.where(wsum > 0, (w[:, None] * np.nan_to_num(corr)).sum(0) / wsum, np.nan)
+        self.block_corr_ = pd.DataFrame(corr, columns=X.columns, index=[f"block{i}" for i in range(len(blocks))])
+        self.scores_ = pd.Series(score, index=X.columns, name="stability")
+        strength = self.scores_.abs().fillna(0.0)
+
+        cols = list(X.columns)
+        if self.n_assets:
+            by_asset = strength.groupby([asset_of(c) for c in cols]).mean().sort_values(ascending=False)
+            keep = set(by_asset.index[: self.n_assets]) | {"USDJPY"}
+            cols = [c for c in cols if asset_of(c) in keep]
+        if self.n_types:
+            by_type = strength[cols].groupby([feature_type_of(c) for c in cols]).mean().sort_values(ascending=False)
+            keep_t = set(by_type.index[: self.n_types])
+            cols = [c for c in cols if feature_type_of(c) in keep_t]
+        ranked = strength[cols].sort_values(ascending=False)
+        ranked = ranked[ranked > 0]
+        candidates = list(ranked.index[: max(self.n_features, 1) * max(self.candidate_factor, 1)])
+
+        dropped: list[str] = []
+        if self.corr_threshold is not None and len(candidates) > self.n_features:
+            rng = np.random.default_rng(self.random_state)
+            rows = np.sort(rng.choice(len(X), size=min(self.corr_rows, len(X)), replace=False))
+            C = X.iloc[rows][candidates].rank().corr().abs().to_numpy()
+            kept_idx: list[int] = []
+            for i in range(len(candidates)):
+                if kept_idx and np.nanmax(C[i, kept_idx]) > self.corr_threshold:
+                    dropped.append(candidates[i])
+                    continue
+                kept_idx.append(i)
+                if len(kept_idx) >= self.n_features:
+                    break
+            selected = [candidates[i] for i in kept_idx]
+        else:
+            selected = candidates[: self.n_features]
+        if not selected:
+            raise ValueError("StabilityFeatureSelector selected no columns (all scores NaN?)")
+        self.selected_ = selected
+        self.dropped_collinear_ = dropped
+        self.n_features_in_ = X.shape[1]
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        check_is_fitted(self, "selected_")
+        return pd.DataFrame(X)[self.selected_]
+
+    def get_feature_names_out(self, input_features=None):
+        check_is_fitted(self, "selected_")
+        return np.asarray(self.selected_, dtype=object)

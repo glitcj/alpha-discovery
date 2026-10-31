@@ -5,11 +5,12 @@ evaluation. The project mirrors the experiment pipeline of `delivery-time-predic
 modules → one `execute()` call → leaderboard / diagnostics / experiments → refit → artefacts →
 pre/post-analysis report.
 
-There are three experiment arms; each changes one thing on top of the previous one:
+There are four experiment arms; each changes one thing on top of the previous one (the lineage tree is below):
 
 | arm | objective | inputs | selection |
 |---|---|---|---|
-| `v003_cross_asset` (default) | **1-day forward log return**, `y_t = log(close[t+25] / close[t+1])` — the target of ml-pipe's `v001_logreturn_exp_v19_legacy_test` (`FWDLogReturn(48, 1)` on 30-min bars), regression | USDJPY + a 30-asset yfinance basket (FX, US yields, equity indices, VIX, commodities, BTC), ~7k features | Spearman |
+| `v004_feature_selection` (default) | same as v003 | the v003 columns, cut per fold to the 200 whose Spearman with the target is most stable across 63-day blocks (`StabilityFeatureSelector`, ml-pipe's `FeatureSelector` + `MulticollinearityFilter`) | Spearman |
+| `v003_cross_asset` | **1-day forward log return**, `y_t = log(close[t+25] / close[t+1])` — the target of ml-pipe's `v001_logreturn_exp_v19_legacy_test` (`FWDLogReturn(48, 1)` on 30-min bars), regression | USDJPY + a 30-asset yfinance basket (FX, US yields, equity indices, VIX, commodities, BTC), ~7k features | Spearman |
 | `v002_fwd_logret_1d` | same | USDJPY only, 234 features | Spearman |
 | `v001_lgbm_walkforward` | next-hour direction, `close[t+1] > close[t]`, classification | USDJPY only | ROC AUC |
 
@@ -21,8 +22,8 @@ Everything runs in Docker (`make help` lists the targets):
 make build          # image with numpy/pandas/sklearn/lightgbm/yfinance/jupyter
 make fetch          # ~2.8 years of 1h bars for USDJPY + the 30-asset basket -> dataset/ (the only network step)
 make test           # unit tests on synthetic random-walk bars (no network)
-make train          # v003 end-to-end -> outputs/ (leaderboard, holdout score, predictions.csv, model.joblib)
-make train EXP=v002_fwd_logret_1d      # USDJPY-only features;  EXP=v001_lgbm_walkforward: next-hour direction
+make train          # v004 end-to-end -> outputs/ (leaderboard, holdout score, predictions.csv, model.joblib); the run is recorded in experiment-lineage.json
+make train EXP=v003_cross_asset        # no feature selection; EXP=v002_fwd_logret_1d: USDJPY-only; EXP=v001_lgbm_walkforward: next-hour direction
 make predict        # forecast from the latest cached bar with the saved model
 make experiments    # experiment ladder (TASK=return|direction; return = v003 data) -> outputs/experiments.json
 make lineage        # sync experiment-lineage.json, render outputs/figures/lineage.png, print the best-MCC path (METRIC=mcc)
@@ -37,7 +38,7 @@ Options: `EXP=<module>`, `MODELS=persistence,ridge,lgbm_reg` (empty = the arm's 
 | path | role |
 |---|---|
 | `usdjpy/data.py` | yfinance download + CSV cache for USDJPY and the `BASKET`, `align_basket` (as-of join onto the FX-week grid + staleness), targets, purged chronological holdout |
-| `usdjpy/features.py` | `BarCleaner` (optional FX-week grid), `BarFeatureEngineer` (v001), `MultiWindowFeatureEngineer` (ml-pipe feature set, per asset), `ColumnSubset` (by asset / regex), encoders |
+| `usdjpy/features.py` | `BarCleaner` (optional FX-week grid), `BarFeatureEngineer` (v001), `MultiWindowFeatureEngineer` (ml-pipe feature set, per asset), `ColumnSubset` (by asset / regex), `StabilityFeatureSelector` (v004, fitted per fold), encoders |
 | `usdjpy/models.py` | direction candidates (`majority`, `momentum`, `logreg`, `lgbm`), return regressors (`persistence`, `mean`, `best_feature`, `random`, `ridge`, `lgbm_reg`) |
 | `usdjpy/evaluation.py` | `DirectionEvaluator` / `ReturnEvaluator` (walk-forward `TimeSeriesSplit` + gap), ml-pipe's metric set + `rank_score`, slices (incl. market regime), displays |
 | `usdjpy/pipeline/classification.py` | `execute()`: the 10 phases, task-aware |
@@ -75,7 +76,7 @@ Options: `EXP=<module>`, `MODELS=persistence,ridge,lgbm_reg` (empty = the arm's 
 - A random walk scores Spearman ≈ 0 through the evaluator.
 - No development label overlaps the holdout or a test fold.
 
-The cells below re-run v003 and render the full report.
+The cells below re-run v004 and render the full report.
 
 ## Experiment ladder
 
@@ -95,10 +96,12 @@ graph TD
     v001_lgbm_walkforward["v001_lgbm_walkforward<br/>(not run)"]
     v002_fwd_logret_1d["v002_fwd_logret_1d<br/>(not run)"]
     v003_cross_asset["v003_cross_asset<br/>mcc 0.057 · spearman 0.060"]
+    v004_feature_selection["v004_feature_selection<br/>mcc 0.079 · spearman 0.079"]
     v001_lgbm_walkforward --> v002_fwd_logret_1d
     v002_fwd_logret_1d --> v003_cross_asset
+    v003_cross_asset --> v004_feature_selection
     classDef best fill:#9ec5f4,stroke:#0ca30c,stroke-width:2px
-    class v001_lgbm_walkforward,v002_fwd_logret_1d,v003_cross_asset best
+    class v001_lgbm_walkforward,v002_fwd_logret_1d,v003_cross_asset,v004_feature_selection best
 ```
 
 ![lineage](outputs/figures/lineage.png)
@@ -117,6 +120,32 @@ The full set is in `outputs/figures/` (and inline above when the notebook has be
 | ![calendar](outputs/figures/post_calendar.png) | ![holdout](outputs/figures/post_holdout_timeline.png) |
 
 ## Findings (data 2024-01-15 → 2026-10-29)
+
+### v004: stability-ranked feature selection (ml-pipe's FeatureSelector)
+
+* **Selecting stable features is the second thing that moves the needle.** Out-of-fold Spearman for
+  `lgbm_reg` is **+0.079** (holdout Jun–Oct 2026: **+0.094**, MCC 0.093, 51.8% sign accuracy, +4.6 bp/day on the
+  daily sign trade after costs). The v003 model on the *same folds* in the same run scores +0.054 (it scored +0.060
+  in its own run: that gap is run-to-run noise of the 7k-column fit, and both numbers are in
+  `experiment-lineage.json`). ml-pipe's `rank_score` and MCC agree with the Spearman ordering.
+* **Still not a robust result, and the fold spread got wider.** Per-fold Spearman is 0.21 / 0.18 / 0.18 / 0.08 /
+  −0.14 (std 0.126 vs 0.103 for v003): three strong 2025 folds, and the most recent fold is now clearly negative.
+  The verdict is unchanged: worth another arm, not worth trading.
+* **What gets selected.** On the full development set the selector keeps **145** columns (not 200: the |ρ| > 0.8
+  filter drops 455 of the 600 candidates, so the pool runs out; a larger candidate pool is a one-line follow-up).
+  87 are FX crosses (CADJPY, USDCHF, GBPJPY, AUDUSD, NZDUSD, EURJPY), 16 USDJPY's own, 16 equity, 15 rates, 9
+  commodities. By type: drawup / drawdown / RSI / weighted-MA deviation dominate; by window: 5-day (51), 21-day
+  (41) and 63-day (39), only 14 columns at ≤ 1 day; shifts split 81 / 64 between now and one day ago. The most
+  stable single columns are USDJPY's own 63-day drawdown / drawup / RSI and 21-day WEMA deviation (|score|
+  0.18–0.25). LightGBM gain over the kept columns: FX 51%, equity 16%, rates 15%, USDJPY 10%, commodities 8%; the
+  top column (US 13-week change-volatility, 21-day) carries 2.4%, the top 20 34%.
+* **Ladder (same folds).** `N=100` collapses to +0.008 and `N=400` gives +0.050, so 200 is near the sweet spot but
+  the curve is sharp; the asset / feature-type pre-selection (15 assets, 10 types) gives +0.061; removing the
+  multicollinearity filter gives +0.037, i.e. the filter is worth ~+0.04 on its own. `ridge` on the selected
+  columns is −0.005 (it was +0.044 on all 7k columns): the stable columns are useful to trees, not linearly.
+* **The model still memorises.** In-sample − out-of-sample Spearman on the 80/20 fit is +0.87 (v003: 0.95), and
+  the confidence slices now order correctly (largest |predictions| 54%, q3 58%, smallest 51%), a first sign that
+  the magnitudes mean something. 400 trees on 145 columns is still too much capacity for ~11k rows.
 
 ### v003: cross-asset inputs (the main gap vs. ml-pipe)
 
@@ -170,13 +199,11 @@ The full set is in `outputs/figures/` (and inline above when the notebook has be
 
 ## Next arms
 
-* `v004`: ml-pipe-style selection. Asset / feature-type pre-selection on the development rows by mean
-  |Spearman| (the tables in the pre-analysis), then a stability-ranked (rolling 63-day Spearman /
-  Pearson, EWMA-weighted) top-N feature selector *inside* the pipeline with N chosen by inner
-  walk-forward, plus a |ρ| > 0.8 multicollinearity filter. The ladder says where to start: slow
-  windows (≥ 5 days), equity + FX groups, Huber loss. Goal: keep the +0.06–0.09 while cutting 7k
-  columns to a few hundred, which should tighten the fold spread and close the 0.95 generalization gap.
-* `v005`: ml-pipe's exact retrain schedule (1.5-year training window, 16-day skip, 6-month roll,
+* `v005`: shrink the model to the selected columns: fewer trees / stronger regularisation (the 0.87
+  generalization gap), a larger collinearity candidate pool so N=200 is actually reached, and N chosen by an
+  inner walk-forward as ml-pipe's `GridSearchCPCV` does (the N=100 / 200 / 400 ladder is sharp). Huber loss and
+  the ≥ 5-day windows are the other two ladder hints not yet folded in.
+* `v006`: ml-pipe's exact retrain schedule (1.5-year training window, 16-day skip, 6-month roll,
   out-of-sample pooled) so the numbers line up with ml-pipe's reports one-to-one.
 * Data: the free Yahoo feed caps us at ~2.8 years and hourly bars; 5 folds on that is why the fold
   spread is wide. The Tiingo / Sharadar parquet files ml-pipe uses (or a documented API, see

@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
 from scipy.stats import spearmanr
-from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin, clone
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression, Ridge
@@ -87,14 +87,16 @@ class MomentumClassifier(ClassifierMixin, BaseEstimator):
         return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
 
 
-def make_candidate(name: str, random_state: int = 0, drop=(), columns=None) -> Pipeline:
-    """Build a fresh ``encode -> model`` pipeline.
+def make_candidate(name: str, random_state: int = 0, drop=(), columns=None, selector=None) -> Pipeline:
+    """Build a fresh ``encode [-> select] -> model`` pipeline.
 
     ``drop`` removes v001 bar-feature columns; ``columns`` (a :class:`ColumnSubset`) selects the
-    input columns of the return regressors (default: every column except the calendar ones).
+    input columns of the return regressors (default: every column except the calendar ones);
+    ``selector`` (a fitted-per-fold transformer such as :class:`~usdjpy.features.StabilityFeatureSelector`)
+    is inserted between the encoder and ``ridge`` / ``lgbm_reg`` (v004+).
     """
     if name in REGRESSION_CANDIDATES:
-        return make_regressor(name, random_state=random_state, columns=columns)
+        return make_regressor(name, random_state=random_state, columns=columns, selector=selector)
     if name == "majority":
         return Pipeline([("encode", make_preprocessor("tree", drop)),
                          ("model", DummyClassifier(strategy="prior"))])
@@ -191,8 +193,9 @@ def target_transformer() -> Pipeline:
 LGBM_REG_PARAMS = {k: v for k, v in LGBM_PARAMS.items()}
 
 
-def make_regressor(name: str, random_state: int = 0, columns=None) -> Pipeline:
+def make_regressor(name: str, random_state: int = 0, columns=None, selector=None) -> Pipeline:
     cols = columns if columns is not None else ColumnSubset(exclude=CALENDAR_FEATURES)
+    select = [("select", clone(selector))] if selector is not None else []
     if name == "persistence":
         return Pipeline([("encode", make_preprocessor("tree", columns=cols)),
                          ("model", FeatureRegressor("pct_change_w24_s0", 1.0))])
@@ -205,12 +208,12 @@ def make_regressor(name: str, random_state: int = 0, columns=None) -> Pipeline:
         return Pipeline([("encode", make_preprocessor("tree", columns=cols)),
                          ("model", RandomSampleRegressor(random_state=random_state))])
     if name == "ridge":
-        return Pipeline([("encode", make_preprocessor("dense", columns=cols)),
+        return Pipeline([("encode", make_preprocessor("dense", columns=cols)), *select,
                          ("model", TransformedTargetRegressor(regressor=Ridge(alpha=100.0),
                                                               transformer=target_transformer(),
                                                               check_inverse=False))])
     if name == "lgbm_reg":
-        return Pipeline([("encode", make_preprocessor("tree", columns=cols)),
+        return Pipeline([("encode", make_preprocessor("tree", columns=cols)), *select,
                          ("model", TransformedTargetRegressor(
                              regressor=LGBMRegressor(random_state=random_state, **LGBM_REG_PARAMS),
                              transformer=target_transformer(), check_inverse=False))])

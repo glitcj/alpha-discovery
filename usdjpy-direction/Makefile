@@ -1,4 +1,4 @@
-# USDJPY 1-day forward log return, cross-asset (v003) / USDJPY-only (v002) / 1-hour direction (v001) — everything runs inside the Docker image.
+# USDJPY 1-day forward log return: feature selection (v004) / cross-asset (v003) / USDJPY-only (v002) / 1-hour direction (v001) — everything runs inside the Docker image.
 IMAGE  ?= usdjpy-direction
 MOUNTS := -v $(CURDIR):/app
 # the container cannot see ../.git: pass the commit in so experiment-lineage.json records which pipeline ran
@@ -11,7 +11,7 @@ RUN_IT := docker run --rm -it $(GIT_ENV) $(MOUNTS) $(IMAGE)
 # what `make run` executes inside the container, e.g. make run FILE="-m usdjpy.train --n-rows 3000 --cv 3"
 FILE   ?= -m usdjpy.train --help
 # experiment module under usdjpy/exp/ and candidate subset for `make train` / `make evaluate` (empty = the arm's set)
-EXP    ?= v003_cross_asset
+EXP    ?= v004_feature_selection
 MODELS ?=
 CV     ?= 5
 SEED   ?= 0

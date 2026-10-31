@@ -2,7 +2,7 @@
   "schema": 1,
   "project": "usdjpy-direction",
   "metric": "mcc",
-  "updated_at": "2026-10-30T21:49:29+00:00",
+  "updated_at": "2026-10-31T16:30:22+00:00",
   "nodes": {
     "v001_lgbm_walkforward": {
       "file": "usdjpy/exp/v001_lgbm_walkforward.py",
@@ -172,6 +172,142 @@
           "imported_from": "outputs"
         }
       ]
+    },
+    "v004_feature_selection": {
+      "file": "usdjpy/exp/v004_feature_selection.py",
+      "task": "return",
+      "primary_metric": "spearman",
+      "parents": [
+        "v003_cross_asset"
+      ],
+      "goal": "stability-ranked top-N feature selection inside the pipeline (ml-pipe FeatureSelector)",
+      "changes": [
+        {
+          "from": "v003_cross_asset",
+          "what": "StabilityFeatureSelector fitted per fold: Spearman with the target inside 63-day blocks, half-life-weighted signed mean, top 200 by |score| after a |rho| > 0.8 multicollinearity filter; applied to lgbm_reg and ridge",
+          "why": "v003's signal is diffuse over 7k columns and the model memorises (generalization gap 0.95); ml-pipe selects a few hundred stable features before the net"
+        }
+      ],
+      "pipeline_commit": "8cd361a",
+      "note": null,
+      "runs": [
+        {
+          "at": "2026-10-31T16:23:47+00:00",
+          "git_commit": "8cd361a",
+          "git_dirty": true,
+          "seed": 0,
+          "cv": 5,
+          "cost_bps": 0.5,
+          "models": [
+            "persistence",
+            "mean",
+            "best_feature",
+            "random",
+            "ridge",
+            "lgbm_reg"
+          ],
+          "best": "lgbm_reg",
+          "task": "return",
+          "primary_metric": "spearman",
+          "cv_metrics": {
+            "spearman": 0.07931454980891765,
+            "pearson": 0.1004699100095362,
+            "r2": -0.20314287672942832,
+            "mcc": 0.0788426876152529,
+            "f1": 0.5606355108594608,
+            "roc_auc": 0.5529500946594033,
+            "auc": 0.5529500946594033,
+            "bin_acc": 0.5382770870337478,
+            "strategy_bps": 3.661128626179334,
+            "sharpe": 0.9659001962053557,
+            "rank_score": 22.75
+          },
+          "holdout": {
+            "spearman": 0.09446288954435926,
+            "pearson": 0.029744600290562535,
+            "r2": -0.11561312014183467,
+            "mcc": 0.09278199076791653,
+            "f1": 0.4958388085851949,
+            "roc_auc": 0.5646859417246777,
+            "auc": 0.5646859417246777,
+            "bin_acc": 0.5182084554206781,
+            "strategy_bps": 4.584826524003501,
+            "sharpe": 1.4221999091338673
+          },
+          "variants": {
+            "lgbm_reg (no selection = v003)": {
+              "spearman": 0.05388493818036391,
+              "pearson": 0.05189816742404981,
+              "r2": -0.20528902941226268,
+              "mcc": 0.061424997031959784,
+              "f1": 0.4940387481371088,
+              "roc_auc": 0.5290512780466723,
+              "auc": 0.5290512780466723,
+              "bin_acc": 0.5175843694493784,
+              "strategy_bps": 4.815624657529801,
+              "sharpe": 1.2734553232527
+            },
+            "lgbm_reg (N=100)": {
+              "spearman": 0.008043983542763337,
+              "pearson": 0.03382831962402426,
+              "r2": -0.323263557084702,
+              "mcc": 0.020083339915795417,
+              "f1": 0.5475366617235129,
+              "roc_auc": 0.5219152726456602,
+              "auc": 0.5219152726456602,
+              "bin_acc": 0.5122557726465364,
+              "strategy_bps": -0.13451165825789335,
+              "sharpe": -0.03542034279860116
+            },
+            "lgbm_reg (N=400)": {
+              "spearman": 0.05007765333010275,
+              "pearson": 0.06392715938002957,
+              "r2": -0.18666390408799183,
+              "mcc": 0.05154586308007661,
+              "f1": 0.5397206273031108,
+              "roc_auc": 0.5345853132603989,
+              "auc": 0.5345853132603989,
+              "bin_acc": 0.5230017761989343,
+              "strategy_bps": 3.1517712059948915,
+              "sharpe": 0.831228175856618
+            },
+            "lgbm_reg (asset/type pre-selection)": {
+              "spearman": 0.061272740491296114,
+              "pearson": 0.04858626282309171,
+              "r2": -0.15609000723828603,
+              "mcc": 0.045598960051290126,
+              "f1": 0.5267654751525719,
+              "roc_auc": 0.5481172052640806,
+              "auc": 0.5481172052640806,
+              "bin_acc": 0.5179396092362345,
+              "strategy_bps": 0.7700120785431477,
+              "sharpe": 0.2027368209125418
+            },
+            "lgbm_reg (no multicollinearity filter)": {
+              "spearman": 0.03717616283109182,
+              "pearson": 0.061721337237903545,
+              "r2": -0.24842658645787408,
+              "mcc": 0.026527663608749353,
+              "f1": 0.544,
+              "roc_auc": 0.5407545104947342,
+              "auc": 0.5407545104947342,
+              "bin_acc": 0.514031971580817,
+              "strategy_bps": 0.4469080171242881,
+              "sharpe": 0.11767025848798635
+            }
+          },
+          "n_dev": 13512,
+          "n_features": 7293,
+          "wall_time_s": 252.9,
+          "versions": {
+            "usdjpy": "0.1.0",
+            "sklearn": "1.9.1",
+            "lightgbm": "4.7.0",
+            "pandas": "3.1.0",
+            "python": "3.12.14"
+          }
+        }
+      ]
     }
   },
   "edges": [
@@ -183,6 +319,11 @@
     {
       "from": "v002_fwd_logret_1d",
       "to": "v003_cross_asset",
+      "kind": "primary"
+    },
+    {
+      "from": "v003_cross_asset",
+      "to": "v004_feature_selection",
       "kind": "primary"
     }
   ]

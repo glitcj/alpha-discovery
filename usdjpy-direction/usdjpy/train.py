@@ -1,14 +1,14 @@
 """Command line wrapper around an experiment module.
 
-    python -m usdjpy.train                                   # v003 (cross-asset, 1-day forward log return) -> outputs/
-    python -m usdjpy.train --exp v002_fwd_logret_1d          # USDJPY-only features
+    python -m usdjpy.train                                   # v004 (cross-asset + feature selection, 1-day forward log return) -> outputs/
+    python -m usdjpy.train --exp v003_cross_asset            # no feature selection; --exp v002_fwd_logret_1d: USDJPY-only features
     python -m usdjpy.train --exp v001_lgbm_walkforward       # the next-hour direction arm
     python -m usdjpy.train --models ridge,lgbm_reg --evaluate-only
     python -m usdjpy.train --predict-only                    # forecast from the latest cached bar
     python -m usdjpy.train --n-rows 3000 --cv 3              # quick smoke run on the most recent bars
 
 The same experiment runs in the notebook with
-``from usdjpy.exp import v003_cross_asset as exp;
+``from usdjpy.exp import v004_feature_selection as exp;
 exp.run(display_preanalysis=True, display_postanalysis=True)``.
 """
 
@@ -27,7 +27,7 @@ from .data import BAR, align_basket, cache_path, load_bars, load_basket
 from .evaluation import DEFAULT_COST_BPS, md_table
 from .pipeline.classification import OUTPUTS
 
-DEFAULT_EXP = "v003_cross_asset"
+DEFAULT_EXP = "v004_feature_selection"
 COLUMNS = {
     "direction": ["auc", "auc_fold_std", "log_loss", "accuracy", "strategy_bps", "sharpe", "n"],
     "return": ["spearman", "spearman_fold_std", "kendall", "pearson", "r2", "mcc", "f1", "bin_acc", "strategy_bps",

@@ -164,7 +164,7 @@ def test_v003_run_and_diagnostics(v003_cache, tmp_path, capsys):
 
 def test_v003_cli_predict_and_ladder(v003_cache, tmp_path, capsys):
     out_dir = tmp_path / "cli"
-    assert train.main(["--models", "persistence,lgbm_reg", "--cv", "2", "--output-dir", str(out_dir),
+    assert train.main(["--exp", "v003_cross_asset", "--models", "persistence,lgbm_reg", "--cv", "2", "--output-dir", str(out_dir),
                        "--no-experiments", "--no-figures", "--no-diagnostics"]) == 0
     assert "rank_score" in capsys.readouterr().out
     assert train.main(["--predict-only", "--output-dir", str(out_dir)]) == 0
